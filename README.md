@@ -1,192 +1,259 @@
-# Claude Code → Codex 记忆同步
+# Claude Code → Codex Memory Sync
 
-这是一个轻量、单向、本地运行的 PowerShell 工具。它读取 Claude Code 的 project auto-memory，把可安全同步的 Markdown 内容转换为 Codex 的 `ad_hoc` ingress note。
+Convert Claude Code project auto-memory into local Codex `ad_hoc` staging notes with one PowerShell command.
 
-它不是新的 Agent 终端，也不安装或启动 daemon、MCP server、数据库、向量库；运行时不调用模型、`codex exec` 或网络 API。
+[![Test](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
+[![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
 
-> 这是社区工具，与 Anthropic 或 OpenAI 无隶属或官方背书关系。
+[English](README.md) | [中文版](README_CN.md)
 
-## 工作边界
+> This is an independent community project. It is not affiliated with or endorsed by Anthropic or OpenAI.
 
-数据流如下：
+## ⭐ Read this first: the design philosophy
+
+**Stage verifiable memory updates; never pretend the two agents share a brain.**
+
+This tool is intentionally small. Its design follows three principles:
+
+1. **Fill the seam, do not add another agent surface.** Claude Code already stores project memory, and Codex already owns its memory consolidation. This tool only converts one representation into the format accepted by the detected local ingress contract. It adds no agent terminal, daemon, MCP server, database, vector store, or model call.
+2. **Stage through the detected local contract, do not impersonate Codex internals.** The script appends self-contained notes under `extensions\ad_hoc\notes\`. It never rewrites Codex memory summaries, rollout evidence, or SQLite state. A successful sync means “safely staged,” not “already consolidated or guaranteed to be recalled.”
+3. **Memory quality matters more than memory volume.** Dry-run first, select conservatively, fail closed on likely credentials, bound every input, and deduplicate incrementally. Copying every log and stale decision would make the pool larger while potentially making recall worse.
+
+The design target is the smallest auditable bridge between two existing memory systems, not a universal shared-memory platform.
+
+## What it is (and isn't)
+
+`claude-codex-memory-sync` is a lightweight, local, one-way converter for Windows PowerShell 5.1. It reads Claude Code project auto-memory Markdown, applies path and credential checks, and stages eligible content as Codex `ad_hoc` notes.
 
 ```text
 Claude project memory (*.md)
-        │ 只读、筛选、凭据扫描、增量去重
+        │ read-only selection, credential scan, incremental deduplication
         ▼
 <CodexMemoriesRoot>\extensions\ad_hoc\notes\*.md
-        │ Codex 后续异步处理
+        │ asynchronous processing owned by Codex
         ▼
 Codex memory consolidation
 ```
 
-默认 Codex memories 根目录优先使用 `$env:CODEX_HOME\memories`；未设置 `CODEX_HOME` 时回退到 `%USERPROFILE%\.codex\memories`。
+It does not:
 
-脚本只向其 `extensions\ad_hoc\notes\` 追加 staging note，不直接改写 `MEMORY.md`、`memory_summary.md`、`raw_memories.md`、rollout evidence 或 Codex 的 SQLite 状态。
+- start a new agent terminal or background service;
+- install an MCP server, database, or vector store;
+- call a model, `codex exec`, or any network API at runtime;
+- write memory back from Codex to Claude;
+- turn the two native memory systems into a strongly consistent database;
+- guarantee when, how, or whether Codex will recall a staged item.
 
-“同步成功”表示 note 已安全暂存，不表示 Codex 已经完成 consolidation，也不保证下一次对话会立即召回。Codex 的整理是异步的，具体时机由 Codex 自己决定。
+## Install
 
-同步是单向追加/更新语义。Claude 端删除或重命名文件，不会删除或重命名已经进入 Codex 的记忆；需要遗忘或纠正时，应在 Codex 中显式提出。
+Requirements:
 
-## 快速开始
+- Windows;
+- Windows PowerShell 5.1 (`powershell.exe`), the supported and tested runtime;
+- a Claude memory directory containing `MEMORY.md`;
+- Codex memories enabled, with an existing memories root and `extensions\ad_hoc\instructions.md` beneath it.
 
-需要 Windows PowerShell 5.1 或更高版本，并且 Codex memories 已启用、目标根目录中存在 `extensions\ad_hoc\instructions.md`。第一次务必先运行 dry run。
-
-以下命令在 Windows PowerShell 中运行：
+Clone the repository; the tool needs no additional PowerShell modules or packages. Git is used for cloning and, when available, Git-root discovery:
 
 ```powershell
-Set-Location C:\path\to\claude-codex-memory-sync
-.\sync-memory.cmd -ProjectPath C:\path\to\your-project -DryRun
+git clone https://github.com/DaizeDong/claude-codex-memory-sync.git
+Set-Location .\claude-codex-memory-sync
 ```
 
-核对候选数量、字节数和安全扫描结果；自动映射存在疑问时先改用显式 `-ClaudeMemoryPath`。确认无误后再实际暂存：
+## Quick start
+
+Run the first sync as a zero-write preview:
 
 ```powershell
-.\sync-memory.cmd -ProjectPath C:\path\to\your-project
+.\sync-memory.cmd -ProjectPath "C:\path\to\your-project" -DryRun
 ```
 
-也可以直接调用 PowerShell 脚本：
+Review the selected file count, byte count, planned changes, and safety results. If automatic source mapping is ambiguous, stop and pass an explicit `-ClaudeMemoryPath`. Once the preview is correct, stage the notes:
+
+```powershell
+.\sync-memory.cmd -ProjectPath "C:\path\to\your-project"
+```
+
+You can also call the PowerShell script directly:
 
 ```powershell
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-memory-to-codex.ps1 `
-  -ProjectPath C:\path\to\your-project `
+  -ProjectPath "C:\path\to\your-project" `
   -DryRun
 ```
 
-`sync-memory.cmd` 使用的 `-ExecutionPolicy Bypass` 只作用于这一次 PowerShell 进程，不会修改系统或用户的持久执行策略。包装器会原样透传参数和脚本退出码。
+The wrapper's `-ExecutionPolicy Bypass` applies only to that PowerShell process. It does not change the persistent system or user execution policy. `sync-memory.cmd` forwards both arguments and the script's exit code.
 
-## 路径发现与显式覆盖
+## How it works
 
-默认值：
+The default Codex memories root is:
 
-- `ProjectPath`：当前工作目录。
-- `ClaudeProjectsRoot`：`%USERPROFILE%\.claude\projects`。
-- `CodexMemoriesRoot`：优先 `$env:CODEX_HOME\memories`；`CODEX_HOME` 未设置时为 `%USERPROFILE%\.codex\memories`。
+1. `$env:CODEX_HOME\memories`, when `CODEX_HOME` is set;
+2. `%USERPROFILE%\.codex\memories`, otherwise.
 
-脚本会根据项目绝对路径查找对应的 Claude project memory。路径编码可能产生歧义，移动过的仓库也可能保留旧目录；为避免泄露本机路径，摘要输出不会打印自动发现的完整路径。不能确定映射时，不要继续写入，改用显式覆盖。
+The script writes only to `extensions\ad_hoc\notes\`. It does not directly edit `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, rollout evidence, or Codex SQLite state.
 
-指定 Claude project key：
+Sync is one-way and append/update oriented. Deleting or renaming a Claude source file does not delete, rename, or retract memory already staged for Codex. To correct or forget an old memory, ask Codex explicitly; deleting only the Claude source is not sufficient.
+
+“Staged” also does not mean “consolidated.” Codex processes ingress notes asynchronously on its own schedule.
+
+## Path discovery and explicit overrides
+
+Defaults:
+
+- `ProjectPath`: the current working directory.
+- `ClaudeProjectsRoot`: `%USERPROFILE%\.claude\projects`.
+- `CodexMemoriesRoot`: `$env:CODEX_HOME\memories`, or `%USERPROFILE%\.codex\memories` when `CODEX_HOME` is unset.
+
+When Git is available and `git rev-parse` succeeds for `ProjectPath`, the Git root defines project identity and automatic mapping. Otherwise, discovery checks `ProjectPath` and its parents and requires exactly one matching Claude memory directory. Path encoding can be ambiguous, and a moved repository may leave an old directory behind. Moving the project also changes its identity. The summary deliberately avoids printing the complete auto-discovered path. If the mapping is uncertain, do not write; use an explicit override.
+
+Specify the Claude project key:
 
 ```powershell
-.\sync-memory.cmd -ProjectPath D:\src\app `
-  -ClaudeProjectsRoot D:\claude\projects `
+.\sync-memory.cmd -ProjectPath "D:\src\app" `
+  -ClaudeProjectsRoot "D:\claude\projects" `
   -ClaudeProjectKey D--src-app `
   -DryRun
 ```
 
-或者直接指定 memory 目录和 Codex memories 根目录：
+Or specify both the Claude memory directory and Codex memories root directly:
 
 ```powershell
-.\sync-memory.cmd -ProjectPath D:\src\app `
-  -ClaudeMemoryPath D:\claude\projects\D--src-app\memory `
-  -CodexMemoriesRoot D:\codex\memories `
+.\sync-memory.cmd -ProjectPath "D:\src\app" `
+  -ClaudeMemoryPath "D:\claude\projects\D--src-app\memory" `
+  -CodexMemoriesRoot "D:\codex\memories" `
   -DryRun
 ```
 
-`ClaudeMemoryPath` 是最明确的来源覆盖。不要同时传入互相冲突的来源定位参数；参数或路径无效时脚本会以退出码 `1` 结束。
+`ClaudeProjectKey` and `ClaudeMemoryPath` are mutually exclusive source modes. `ClaudeMemoryPath` overrides only the source directory; project identity still comes from the Git root or `ProjectPath`. Invalid parameters or paths exit with code `1`.
 
-## 参数
+## Parameters
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default | Meaning |
 |---|---:|---|
-| `-ProjectPath <path>` | 当前目录 | 当前仓库/项目目录；用于来源映射和项目身份。 |
-| `-ClaudeProjectsRoot <path>` | `%USERPROFILE%\.claude\projects` | Claude Code projects 根目录。 |
-| `-ClaudeProjectKey <name>` | 自动发现 | 显式指定 Claude 的 project 目录名。 |
-| `-ClaudeMemoryPath <path>` | 自动发现 | 直接指定 Claude memory 目录，适合非标准布局或映射歧义。 |
-| `-CodexMemoriesRoot <path>` | `$env:CODEX_HOME\memories`，否则 `%USERPROFILE%\.codex\memories` | Codex memories 根目录；测试、便携环境或非默认安装时覆盖。 |
-| `-DryRun` | 关闭 | 完成发现、筛选、安全检查和计划输出，但不写 staging note。建议每次更换项目或规则时先使用。 |
-| `-IncludeReadme` | 关闭 | 加入 memory 根目录中恰好名为 `README.md` 的文件；默认排除以避免说明文字污染长期记忆。 |
-| `-IncludeArchive` | 关闭 | 额外加入 `memory\archive\*.md` 的直接子级；默认排除历史材料。 |
-| `-IncludeSensitiveNames` | 关闭 | 允许文件名命中敏感名称规则的候选继续接受内容扫描。它**不会**绕过凭据扫描。 |
-| `-MaxFileBytes <int>` | `65536` | 单个来源文件的最大字节数。 |
-| `-MaxTotalBytes <int>` | `4194304` | 单次候选内容的累计最大字节数。 |
-| `-LockTimeoutSeconds <int>` | `10` | 等待全局同步锁的最长秒数，防止不同进程或 Windows session 相互覆盖。 |
-| `-OutputFormat Text\|Json` | `Text` | 人类可读输出或便于自动化解析的 JSON 输出。 |
+| `-ProjectPath <path>` | Current directory | Repository/project path used for source mapping and project identity. |
+| `-ClaudeProjectsRoot <path>` | `%USERPROFILE%\.claude\projects` | Claude Code projects root. |
+| `-ClaudeProjectKey <name>` | Auto-discovered | Explicit Claude project directory name. |
+| `-ClaudeMemoryPath <path>` | Auto-discovered | Direct Claude memory directory; use for nonstandard layouts or ambiguous mapping. |
+| `-CodexMemoriesRoot <path>` | `$env:CODEX_HOME\memories`, otherwise `%USERPROFILE%\.codex\memories` | Codex memories root; override for portable, test, or nondefault installations. |
+| `-DryRun` | Off | Perform discovery, filtering, safety checks, and planning without writing a staging note. |
+| `-IncludeReadme` | Off | Include a root-level basename matching `README.md` exactly, case-insensitively; excluded by default to reduce explanatory noise. |
+| `-IncludeArchive` | Off | Also include direct `memory\archive\*.md` children; archived material is excluded by default. |
+| `-IncludeSensitiveNames` | Off | Let candidates with sensitive filenames continue to content scanning. It **never** bypasses credential scanning. |
+| `-MaxFileBytes <int>` | `65536` | Per-source limit; valid range is 1 KiB–1 MiB. |
+| `-MaxTotalBytes <int>` | `4194304` | Total candidate-content limit; must be at least `MaxFileBytes` and at most 64 MiB. |
+| `-LockTimeoutSeconds <int>` | `10` | Wait for the global destination lock; valid range is 0–300 seconds. |
+| `-OutputFormat Text\|Json` | `Text` | Human-readable output or machine-readable JSON. |
 
-示例：为 CI 或其他脚本输出 JSON 预览：
+A snapshot may contain at most 500 selected source files. History reads are separately bounded to 4,096 notes, 64 MiB total, and 4 MiB per note for the current project.
+
+JSON preview example:
 
 ```powershell
-.\sync-claude-memory-to-codex.ps1 -ProjectPath D:\src\app -DryRun -OutputFormat Json
+.\sync-memory.cmd -ProjectPath "D:\src\app" -DryRun -OutputFormat Json
 ```
 
-## 默认筛选与安全模型
+| `status` | Meaning |
+|---|---|
+| `preview` | A dry run found content to add or update. |
+| `staged` | At least one note was staged. |
+| `no_changes` | Nothing changed; this is success. |
+| `blocked` | A preflight safety rule blocked the batch. |
+| `error` | A handled script failure occurred; this can include a final generated-note safety rejection. |
 
-默认扫描 memory 根目录直接子级的 `*.md`，不递归，其中只排除恰好名为 `README.md` 的文件；`-IncludeArchive` 才会额外加入 `memory\archive\*.md` 的直接子级。敏感文件名会触发整批阻断而不是被静默排除，超出大小上限则是致命错误。符号链接/reparse point、无法安全解析的路径和非普通文件不会被当作可信来源。任何扩大输入面的 include 参数都应在 dry run 后再启用。
+Normal results and preflight safety blocks use the full JSON schema: `tool`, `version`, `status`, `dry_run`, `project_id`, `selected_files`, `selected_bytes`, `added`, `updated`, `unchanged`, `blocked`, `notes_written`, `partial_write`, `blocked_items`, `consolidation`, and `deletes_propagated`. Runtime failures caught after successful parameter binding—including a safety rejection found only after the final note envelope is built—use the smaller `status: "error"` schema: `tool`, `version`, `status`, `message`, `notes_written`, `partial_write`, and `consolidation`. PowerShell startup, parsing, and parameter-binding failures occur before the script's formatter and may produce native stderr instead of JSON. Treat the process exit code as authoritative.
 
-安全检查分两层：
+## Selection and safety model
 
-1. **敏感文件名检查**：默认阻断整批写入。只有 `-IncludeSensitiveNames` 可以明确放行这类名称，使文件继续接受内容扫描。
-2. **硬凭据/secret 内容检查**：发现疑似私钥、访问令牌或其他硬凭据时阻断整批写入。任何 include 参数都不能绕过它。
+By default, the tool selects direct `*.md` children of the Claude memory root without recursion and excludes a case-insensitive exact filename match for `README.md`. `-IncludeArchive` additionally selects direct `memory\archive\*.md` children. Reparse points, UNC/device/alternate-data-stream paths, paths that cannot be resolved safely, and nonregular files are not trusted as sources.
 
-安全阻断采用 all-or-nothing：退出码为 `2`，本次写入数量为零，不会留下部分 staging note。它是降低误同步风险的启发式保护，不是秘密扫描器的完备替代品。提交前仍应阅读 dry run 输出，不要把密码、token、私钥、个人隐私或受监管数据放入 Agent memory。
+The reader accepts strict UTF-8, UTF-8 with BOM, and BOM-marked UTF-16 LE/BE. It normalizes supported line separators to LF and text to NFC, rejects NUL and dangerous control characters, and checks that a source stays stable while it is read. An unstable or invalid source fails with exit code `1` before new notes are written.
 
-默认排除和最大字节数不仅用于安全，也用于控制记忆噪声。放入过多日志、重复说明和过期决策，可能降低后续召回质量。
+Safety checks have two layers:
 
-为限定作用域，note 会保存项目绝对路径；路径中的用户名、客户名和目录结构也会成为记忆内容。路径敏感时，请先使用中性项目路径，并按需通过 `-ClaudeMemoryPath` 显式定位来源。
+1. **Sensitive filename checks.** A match blocks the entire batch by default. `-IncludeSensitiveNames` only lets that file proceed to content scanning.
+2. **Hard credential/secret content checks.** Likely private keys, access tokens, and other hard credentials block the entire batch. No include option bypasses this layer.
 
-## 增量同步语义
+A safety block is all-or-nothing: exit code `2`, zero writes, and no partial staging notes. These checks reduce accidental exposure; they are heuristic and are not a complete secret scanner. Always review the dry-run result, and never put passwords, tokens, private keys, personal data, or regulated data into agent memory.
 
-重复运行会根据来源和内容状态避免重复暂存没有变化的内容。没有新内容时属于正常 no-change，不是错误。
+Imported Claude text is wrapped as quoted, untrusted data and is explicitly marked as non-executable. This reduces instruction confusion; it is not a reason to sync hostile or unnecessary content.
 
-单个 note 采用原子发布，但整批同步不是事务。若中途发生 I/O 错误，已发布的 note 会保留，JSON 会以 `partial_write=true` 和实际 `notes_written` 报告；修复问题后重跑，增量去重会跳过它们并继续其余变更。
+Notes retain the absolute project path to preserve scope. Usernames, customer names, and directory structure inside that path therefore become memory content. If the path itself is sensitive, use a neutral project location and, when needed, point `-ClaudeMemoryPath` to the source explicitly.
 
-脚本把目标 `notes` 目录中符合 CCMS 格式的当前项目历史 note 当作增量基线；能写入该目录的本地账号或进程属于同一信任边界。结构、previous/current 快照哈希和版本链关系校验可发现损坏，但不提供对同权限本地恶意写入的认证；这里的信任仅指同步状态，不表示把 note 内容当作可执行指令。
+## Incremental semantics and trust boundary
 
-为避免无界读取，当前项目的历史基线上限为 4096 个 note、累计 64 MiB，且单个 note 不超过 4 MiB；超过时以退出码 `1` 失败并保持零新增写入。
+Repeated runs compare source identity and content state, so unchanged content is not staged again. A changed source appends a new update note; it never edits the old note in place. `no_changes` is a successful result.
 
-这个工具不会把 Claude 和 Codex 变成强一致的双向数据库：
+Each note is published atomically, but a multi-note batch is not a filesystem transaction. If an I/O error interrupts a batch, already-published notes remain. JSON accurately reports `partial_write=true` and the actual `notes_written`; after the underlying problem is fixed, rerunning skips those notes and continues with the remaining changes.
 
-- 不从 Codex 回写 Claude。
-- 不传播 Claude 端的删除。
-- 不传播重命名为 Codex 端的重命名/撤回。
-- 不自动解决两边已有记忆的语义冲突。
-- 不保证 Codex consolidation 的完成时间或最终表述。
+For incremental baselines, the tool reads valid CCMS history notes for the current project from the destination. Other projects and non-CCMS notes are not part of that baseline. A destination-derived `Global\` mutex serializes cooperating instances of this tool that target the same destination. A local account or process that can write that directory is inside the same trust boundary. Structural checks, current/previous snapshot hashes, metadata, filenames, timestamps, and version-chain validation can detect corruption, but they do not authenticate writes by an equally privileged local process. Note contents are data, not executable instructions.
 
-如果某条旧记忆已经错误，应显式要求 Codex 更新或遗忘，而不是仅删除 Claude 源文件。
+The tool does not propagate:
 
-这不是 Claude 与 Codex 原生记忆的等价转换。Claude 内容会作为 `ad_hoc` note 由 Codex 再整理，可能被摘要、改写、漏召回或与既有记忆冲突；更新 note 同时携带 previous/current 快照，虽然有 superseded 标记，仍可能增加少量噪声。
+- Codex changes back to Claude;
+- Claude-side deletions;
+- source renames as Codex-side renames or retractions—a rename becomes a new source while the old source remains;
+- automatic resolution of semantic conflicts between existing memories.
 
-必须稳定执行的规则应放在 `AGENTS.md` 或仓库文档中，记忆只作为辅助召回层。
+This is not an equivalent conversion between Claude and Codex native memory. Codex may summarize, rewrite, omit, or conflict with staged content during consolidation. Update notes carry previous/current snapshots and a superseded marker, which preserves lineage but may still add a small amount of noise.
 
-## 退出码
+Keep stable, mandatory project rules in `AGENTS.md` or repository documentation. Use memory as an auxiliary recall layer, not as the only source of truth.
 
-| 退出码 | 含义 |
+## Exit codes
+
+| Code | Meaning |
 |---:|---|
-| `0` | 正常完成，包括成功写入、dry run 和 no-change。 |
-| `1` | 致命错误，例如参数、路径、I/O、锁或内部处理失败；检查 JSON 的 `partial_write` 与 `notes_written` 判断极端 I/O 失败前是否已有 note 暂存。 |
-| `2` | 安全阻断：检测到硬 secret，或检测到未显式放行的敏感文件名；整批零写。 |
+| `0` | Success, including `staged`, `preview`, or `no_changes`. |
+| `1` | Fatal parameter, path, encoding, size, history, lock, I/O, or internal error. For JSON output, inspect `partial_write` and `notes_written`. |
+| `2` | Safety rejection caused by a hard secret or a sensitive filename not explicitly allowed; the batch writes nothing. Preflight rejection normally uses `status: "blocked"`; final generated-note scanning may use `status: "error"`. |
 
-批处理脚本示例：
+Windows batch example that preserves the exact exit code:
 
 ```bat
-call sync-memory.cmd -ProjectPath D:\src\app -DryRun -OutputFormat Json
+call sync-memory.cmd -ProjectPath "D:\src\app" -DryRun -OutputFormat Json
 set "SYNC_CODE=%ERRORLEVEL%"
 if "%SYNC_CODE%"=="2" echo Safety block: nothing was written.
 if not "%SYNC_CODE%"=="0" if not "%SYNC_CODE%"=="2" echo Fatal error.
 exit /b %SYNC_CODE%
 ```
 
-先保存 `%ERRORLEVEL%` 再做等值判断，可避免退出码 `2` 同时落入一般错误分支；复杂自动化建议解析 JSON 输出。
+For nontrivial automation, prefer parsing the JSON object.
 
-## 验证与测试
+Dry run performs no writes, but it still validates the source, ingress contract, safety rules, and existing history. It can therefore return `1` or `2`.
 
-在工具目录运行完整测试：
+## Verification and tests
+
+Run the complete black-box suite from the repository root:
 
 ```powershell
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\tests\run-tests.ps1
 ```
 
-再针对当前真实配置做一次零写入手工预览：
+Then preview the real local configuration without writing:
 
 ```powershell
-.\sync-claude-memory-to-codex.ps1 `
-  -ProjectPath C:\path\to\your-project `
+.\sync-memory.cmd `
+  -ProjectPath "C:\path\to\your-project" `
   -DryRun `
   -OutputFormat Json
 ```
 
-`-DryRun` 不创建 notes 目录，也不写任何 staging note，但仍会验证真实目标中的 `extensions\ad_hoc\instructions.md`。因此不要把 `CodexMemoriesRoot` 指向一个没有该入口的空临时目录；需要隔离测试时，请运行随附的黑盒测试套件。
+`-DryRun` neither creates the notes directory nor writes staging notes, but it still validates the real target's `extensions\ad_hoc\instructions.md`. Do not point `CodexMemoriesRoot` at an empty temporary directory without that ingress contract; use the bundled black-box suite for isolated tests.
 
-## 许可证
+## Limitations
 
-MIT，见 [LICENSE](LICENSE)。
+- This release supports Windows PowerShell 5.1 on Windows. PowerShell 7 and other operating systems are not tested targets.
+- `extensions\ad_hoc\instructions.md` is a contract detected in the local Codex installation, not a publicly guaranteed stable API. If it is absent or a future Codex change invalidates it, the tool fails closed with exit code `1` and may need an update.
+- Sync remains one-way and Codex consolidation remains asynchronous; immediate or guaranteed recall is out of scope.
+- Credential detection is heuristic. Dry-run review and careful source hygiene remain required.
+
+## Languages
+
+English (`README.md`, authoritative) · 中文 ([`README_CN.md`](README_CN.md))
+
+## License
+
+[MIT](LICENSE)
