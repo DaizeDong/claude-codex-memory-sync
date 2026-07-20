@@ -1,0 +1,16 @@
+.claude/
+.codex/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.key
+*.log
+*.new
+*.patch
+*.pem
+*.tmp
+.DS_Store
+Thumbs.db
+test-results/
