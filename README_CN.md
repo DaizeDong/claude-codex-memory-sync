@@ -142,9 +142,9 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-me
 | `-IncludeReadme` | 关闭 | 加入 memory 根目录中 basename 按大小写不敏感精确匹配 `README.md` 的文件；默认排除以减少说明文字噪声。 |
 | `-IncludeArchive` | 关闭 | 额外加入 `memory\archive\*.md` 的直接子级；默认排除归档材料。 |
 | `-IncludeSensitiveNames` | 关闭 | 允许文件名命中敏感规则的候选继续接受内容扫描。它**绝不会**绕过凭据扫描。 |
-| `-MaxFileBytes <int>` | `65536` | 单个来源文件上限；有效范围为 1 KiB–1 MiB。 |
+| `-MaxFileBytes <int>` | `65536` | 单个来源文件上限；有效范围为 1 KiB 至 1 MiB。 |
 | `-MaxTotalBytes <int>` | `4194304` | 候选内容累计上限；必须不小于 `MaxFileBytes` 且不超过 64 MiB。 |
-| `-LockTimeoutSeconds <int>` | `10` | 等待全局目标锁的时间；有效范围为 0–300 秒。 |
+| `-LockTimeoutSeconds <int>` | `10` | 等待全局目标锁的时间；有效范围为 0 至 300 秒。 |
 | `-OutputFormat Text\|Json` | `Text` | 人类可读输出或机器可读 JSON。 |
 
 单个快照最多选择 500 个来源文件。历史读取另有独立上限：当前项目最多 4,096 个 note、累计 64 MiB，且单个 note 不超过 4 MiB。
@@ -163,7 +163,7 @@ JSON 预览示例：
 | `blocked` | 预检安全规则阻断整批操作。 |
 | `error` | 发生由脚本捕获的失败；也可能表示最终生成 note 的安全检查拒绝。 |
 
-正常结果和预检安全阻断会使用完整 JSON schema：`tool`、`version`、`status`、`dry_run`、`project_id`、`selected_files`、`selected_bytes`、`added`、`updated`、`unchanged`、`blocked`、`notes_written`、`partial_write`、`blocked_items`、`consolidation` 和 `deletes_propagated`。参数绑定成功后由脚本捕获的运行时失败——包括只在最终 note envelope 构造完成后发现的安全拒绝——会使用字段较少的 `status: "error"` schema：`tool`、`version`、`status`、`message`、`notes_written`、`partial_write` 和 `consolidation`。PowerShell 启动、解析和参数绑定错误发生在脚本 formatter 之前，可能输出原生 stderr 而不是 JSON。应始终以进程退出码为准。
+正常结果和预检安全阻断会使用完整 JSON schema：`tool`、`version`、`status`、`dry_run`、`project_id`、`selected_files`、`selected_bytes`、`added`、`updated`、`unchanged`、`blocked`、`notes_written`、`partial_write`、`blocked_items`、`consolidation` 和 `deletes_propagated`。参数绑定成功后由脚本捕获的运行时失败，包括只在最终 note envelope 构造完成后发现的安全拒绝，会使用字段较少的 `status: "error"` schema：`tool`、`version`、`status`、`message`、`notes_written`、`partial_write` 和 `consolidation`。PowerShell 启动、解析和参数绑定错误发生在脚本 formatter 之前，可能输出原生 stderr 而不是 JSON。应始终以进程退出码为准。
 
 ## 默认筛选与安全模型
 
@@ -194,7 +194,7 @@ JSON 预览示例：
 
 - Codex 变更向 Claude 的回写；
 - Claude 端的删除；
-- 来源重命名对应的 Codex 端重命名或撤回——重命名会成为新来源，而旧来源仍然保留；
+- 来源重命名对应的 Codex 端重命名或撤回：重命名会成为新来源，而旧来源仍然保留；
 - 两端已有记忆之间的语义冲突自动解决。
 
 这不是 Claude 与 Codex 原生记忆的等价转换。Codex 在 consolidation 时可能摘要、改写、遗漏暂存内容，或让其与既有记忆冲突。更新 note 会携带 previous/current 快照和 superseded 标记，它保留了版本关系，但仍可能增加少量噪声。

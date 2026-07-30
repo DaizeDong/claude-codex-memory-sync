@@ -142,9 +142,9 @@ Or specify both the Claude memory directory and Codex memories root directly:
 | `-IncludeReadme` | Off | Include a root-level basename matching `README.md` exactly, case-insensitively; excluded by default to reduce explanatory noise. |
 | `-IncludeArchive` | Off | Also include direct `memory\archive\*.md` children; archived material is excluded by default. |
 | `-IncludeSensitiveNames` | Off | Let candidates with sensitive filenames continue to content scanning. It **never** bypasses credential scanning. |
-| `-MaxFileBytes <int>` | `65536` | Per-source limit; valid range is 1 KiB–1 MiB. |
+| `-MaxFileBytes <int>` | `65536` | Per-source limit; valid range is 1 KiB to 1 MiB. |
 | `-MaxTotalBytes <int>` | `4194304` | Total candidate-content limit; must be at least `MaxFileBytes` and at most 64 MiB. |
-| `-LockTimeoutSeconds <int>` | `10` | Wait for the global destination lock; valid range is 0–300 seconds. |
+| `-LockTimeoutSeconds <int>` | `10` | Wait for the global destination lock; valid range is 0 to 300 seconds. |
 | `-OutputFormat Text\|Json` | `Text` | Human-readable output or machine-readable JSON. |
 
 A snapshot may contain at most 500 selected source files. History reads are separately bounded to 4,096 notes, 64 MiB total, and 4 MiB per note for the current project.
@@ -163,7 +163,7 @@ JSON preview example:
 | `blocked` | A preflight safety rule blocked the batch. |
 | `error` | A handled script failure occurred; this can include a final generated-note safety rejection. |
 
-Normal results and preflight safety blocks use the full JSON schema: `tool`, `version`, `status`, `dry_run`, `project_id`, `selected_files`, `selected_bytes`, `added`, `updated`, `unchanged`, `blocked`, `notes_written`, `partial_write`, `blocked_items`, `consolidation`, and `deletes_propagated`. Runtime failures caught after successful parameter binding—including a safety rejection found only after the final note envelope is built—use the smaller `status: "error"` schema: `tool`, `version`, `status`, `message`, `notes_written`, `partial_write`, and `consolidation`. PowerShell startup, parsing, and parameter-binding failures occur before the script's formatter and may produce native stderr instead of JSON. Treat the process exit code as authoritative.
+Normal results and preflight safety blocks use the full JSON schema: `tool`, `version`, `status`, `dry_run`, `project_id`, `selected_files`, `selected_bytes`, `added`, `updated`, `unchanged`, `blocked`, `notes_written`, `partial_write`, `blocked_items`, `consolidation`, and `deletes_propagated`. Runtime failures caught after successful parameter binding, including a safety rejection found only after the final note envelope is built, use the smaller `status: "error"` schema: `tool`, `version`, `status`, `message`, `notes_written`, `partial_write`, and `consolidation`. PowerShell startup, parsing, and parameter-binding failures occur before the script's formatter and may produce native stderr instead of JSON. Treat the process exit code as authoritative.
 
 ## Selection and safety model
 
@@ -194,7 +194,7 @@ The tool does not propagate:
 
 - Codex changes back to Claude;
 - Claude-side deletions;
-- source renames as Codex-side renames or retractions—a rename becomes a new source while the old source remains;
+- source renames as Codex-side renames or retractions: a rename becomes a new source while the old source remains;
 - automatic resolution of semantic conflicts between existing memories.
 
 This is not an equivalent conversion between Claude and Codex native memory. Codex may summarize, rewrite, omit, or conflict with staged content during consolidation. Update notes carry previous/current snapshots and a superseded marker, which preserves lineage but may still add a small amount of noise.

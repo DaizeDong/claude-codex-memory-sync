@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Every path in a public skill repo belongs to exactly one class (Skill Repo Spec v1 s9).",
+    "TOOL    = code, SKILL.md, docs. Public, hand-written, contains no data.",
+    "FIXTURE = tests and examples. Public, but SYNTHETIC and produced by a generator.",
+    "DATA    = anything a real run produced. NEVER git-tracked.",
+    "Enforced by tools/data_boundary.py, in .githooks and in CI.",
+    "",
+    "This repo is a pure transform: it resolves the operator's Claude memory directory, reads the",
+    "MEMORY.md index and the .md files beside it, and writes per-memory files into the Codex home.",
+    "BOTH ENDS OF THAT PIPE LIVE OUTSIDE THE REPO, and that is the whole reason this repo is safe",
+    "to publish. The DATA list below is therefore not a list of files that exist here; it is a SEAL",
+    "on the three paths where a real run's payload could ever come to rest inside the working copy.",
+    "MEMORY.md is the single most PII-dense file on the operator's machine, so the seal matters more",
+    "here than in a repo that merely writes telemetry.",
+    "",
+    ".gitignore already lists all three, but .gitignore is advisory: `git add -f` walks straight",
+    "through it, and an agent that wants a snapshot committed will find that flag. Declaring them",
+    "here makes the seal enforceable at commit time instead of merely requested."
+  ],
+  "data": [
+    ".claude/",
+    ".codex/",
+    "test-results/"
+  ],
+  "fixture": [],
+  "_fixture_note": [
+    "Empty by construction, not by omission. tests/run-tests.ps1 builds every memory tree it needs",
+    "at runtime, under a fresh GUID directory in the system temp dir, and deletes it afterwards. No",
+    "sample memory file is committed, so there is no golden that a real MEMORY.md could be pasted",
+    "into. That is the same guarantee tools/make_fixtures.py provides elsewhere in the fleet, reached",
+    "by having no on-disk fixtures at all."
+  ],
+  "_data_home": "The operator's real memory lives in the Claude projects memory dir and is written to the Codex memories dir. Both are resolved at runtime and neither is ever inside this repo."
+}
