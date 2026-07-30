@@ -1,0 +1,57 @@
+# pii_guard in CI -- the authority.
+#
+# The local hooks are a fast fail, not a guarantee. On 2026-07-13 a pre-commit hook printed its
+# findings and let the commit through anyway, because the caller had piped `git commit` into `head`
+# and the severed pipe destroyed the guard's exit status. A local hook can also be skipped with
+# --no-verify, is not installed on a fresh clone until someone runs the installer, and does not exist
+# at all for a contributor.
+#
+# This runs on GitHub, on every push and every PR, and it cannot be reached by any of that. If a leak
+# gets past the desk, this is what turns it from a silent permanent exposure into a red X.
+#
+# Note it runs WITHOUT the operator's private denylist (that file never leaves their machine). That
+# is the whole point of the allowlist design: the structural checks -- a mailbox at a consumer
+# provider, a real phone, a home ZIP, a non-noreply commit author, anything outside the declared
+# synthetic namespace -- need no private data to work, so they work here too.
+name: pii-guard
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the history scan is the point; a shallow clone would see nothing
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Guard's own tests (does it still catch the leaks it was built for?)
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest tools/test_pii_guard.py -q
+
+      # The DATA BOUNDARY -- the primary control. Runs FIRST, because it is the question that
+      # actually matters: is this repo an uninitialized tool, or does it contain somebody's life?
+      #
+      # pii_guard (below) is the backstop. It reads content and looks for things that SMELL private,
+      # which is why it was clean while a public repo held real-run output from the operator's own account
+      # and a full record of their private activity. A ticker with an entry price has no email in
+      # it, no phone, no ZIP -- nothing to smell. The scanner cannot see a leak that looks like data,
+      # so the boundary has to make the leak structurally impossible instead: no DATA-class path is
+      # tracked, every declared DATA path ships only a schema, and every FIXTURE must be byte-
+      # identical to what its generator emits -- because a real record cannot be regenerated.
+      #
+      # A repo that has not declared .dataclass.json exits 0 here (no-op), so this is safe to ship
+      # everywhere and tightens as each repo declares its classes.
+      - name: Data boundary (is this an uninitialized tool?)
+        run: |
+          if [ -f tools/data_boundary.py ]; then python tools/data_boundary.py; fi
+
+      - name: Scan working tree + full history
+        run: python tools/pii_guard.py --tree --history
