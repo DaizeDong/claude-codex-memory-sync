@@ -157,7 +157,11 @@ function Stop-TestProcessTree {
         if (-not $Process.HasExited) {
             $taskkill = [System.IO.Path]::Combine([System.Environment]::SystemDirectory,'taskkill.exe')
             & $taskkill /PID ([string]$Process.Id) /T /F 2>$null | Out-Null
-            try { [void]$Process.WaitForExit(5000) } catch { }
+            try {
+                if (-not $Process.WaitForExit(5000)) {
+                    Write-Host ('WARN sync process {0} still alive 5s after taskkill /T /F' -f $Process.Id) -ForegroundColor Yellow
+                }
+            } catch { }
         }
     }
     catch { try { $Process.Kill() } catch { } }
