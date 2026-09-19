@@ -1,6 +1,6 @@
-# Claude Code → Codex Memory Sync
+# Claude → Codex Profile Bridge
 
-Convert Claude Code project auto-memory into local Codex `ad_hoc` staging notes with one PowerShell command.
+Bridge supported Claude Code skills, instructions, MCP settings, reviewed hook adapters, and project memory into Codex on the same machine. Preview and back up managed changes before applying them. Ownership checks protect later user edits; native memory delivery requires an explicit authorized scope.
 
 [![Test](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
@@ -11,7 +11,98 @@ Convert Claude Code project auto-memory into local Codex `ad_hoc` staging notes 
 
 > This is an independent community project. It is not affiliated with or endorsed by Anthropic or OpenAI.
 
-## ⭐ Read this first: the design philosophy
+## Managed profile sync
+
+Use `sync-all.cmd` for supported profile components. It requires **Python 3.11 or newer** on `PATH`; Windows directory links use junctions. The original Windows PowerShell 5.1 memory-only entry remains available and is documented below.
+
+```powershell
+# Preview only; this is also the default when no mode is specified.
+.\sync-all.cmd --dry-run
+
+# Inspect conflict, skipped-source, and compatibility details without source bodies.
+.\sync-all.cmd --dry-run --json
+
+# Apply the current plan after creating a local backup.
+.\sync-all.cmd --apply --json
+```
+
+The profile sync covers:
+
+| Source | Codex result |
+|---|---|
+| User skills and skills from enabled, installed Claude plugins | Directory links under `~/.agents/skills`; unrelated existing skills are preserved and collisions are reported. |
+| User/plugin commands and agent role Markdown | Instruction adapters exposed as skills, plus native Codex roles for supported agent definitions. Roles with unrepresentable execution or tool restrictions are reported separately. |
+| Global `CLAUDE.md` and user rules | A hash-tracked managed block in `~/.codex/AGENTS.md`, preserving existing text and reporting edits to the managed block. Source rule path filters retain their scope. |
+| Project `CLAUDE.md` documents | A compatible project-document fallback setting, preserving native Codex project instructions. |
+| Compatible user and enabled-plugin MCP definitions | Incremental managed blocks in `config.toml`; existing native MCP names win conflicts. Unresolved environment variables and unsupported transports/settings are reported. |
+| All nonempty project memory directories | Readable Markdown under `~/.codex/imports/claude-memory/`, a source-only project index, and explicitly authorized `ad_hoc` delivery through a durable outbox. |
+| Claude hooks | Reviewed adapters for SessionStart, PostToolUse and Stop, including browser isolation checks, document-budget feedback and login-state export/absorb. Existing Codex hooks are preserved; unsupported source commands are reported explicitly. Native trust and a new session may be required. |
+
+This is a **same-machine setup**: linked skills and adapted local scripts depend on their original installation. It is not a self-contained copy for a new computer. The tool keeps Codex's existing model, provider, authentication, and permission settings. Claude login/session state is not imported.
+
+Default source is `CLAUDE_CONFIG_DIR`, or the `.claude` directory under the user home; default destination is `CODEX_HOME`, or `~/.codex`. Override paths with `--claude-home`, `--codex-home`, and `--skills-home` when needed. The active `.claude/.claude.json` is preferred over the legacy `~/.claude.json` when both exist. External repository metadata requires an explicit catalog manifest or `CLAUDE_CONFIG_REPO` pointing to the directory containing `external-skill-repos.json`.
+
+### Memory archive behavior
+
+The full sync reads non-archive `*.md` files recursively, skips empty project directories, and maps project scope from exact encoded paths in the active Claude configuration or explicit reviewed path evidence. Active mappings and conflicts take precedence; unknown project keys remain visible without guessing a filesystem path. It accepts UTF-8/BOM text and BOM-marked UTF-16, emits UTF-8, limits each source file to 1 MiB, rejects symlinks/junctions, and skips suspected credentials. Reports list skipped filenames and reasons without source bodies or credential values.
+
+Control characters become visible escapes such as `\u0008` **in the archive only**, with codepoints and locations recorded in the report; source files stay unchanged. Explicit API-key documentation placeholders are accepted, while actual credential patterns remain blocked.
+
+Every run recomputes content hashes. New installations and default invocations maintain the archive only. An `instructions.md` file establishes ingress availability, not user authorization. Explicit `--request-id` and `--scope` select an ingress request; `--periodic` persists an approved recurring scope. Existing periodic grants can be migrated through the documented authorization API without changing scheduler tasks.
+
+Delivery uses a durable outbox and stable increment-based note names. Each increment includes its predecessor, so repeated A to B transitions remain distinct. An interrupted attempt whose delivery cannot be proven is `delivery_unknown` and is never blindly replayed. Notes are created through OS no-replace publication; existing notes and user edits are preserved. Native consolidation is asynchronous. See [memory authorization, persistence, and controller integration](docs/MEMORY_OUTBOX.md) for exact formats and recovery limits.
+
+The current index identifies the active source snapshot. The archive planner retires unchanged owned copies when their source disappears or is excluded, retaining evidence in the existing private profile backup outside the searchable import. Unowned legacy copies require an exact-hash review decision; edited destinations are preserved and reported. Archive ownership is recorded by the existing memory outbox. See [archive hygiene and transaction hooks](docs/MEMORY_ARCHIVE_HYGIENE.md) for integration, reviewed scopes, and rollback behavior. No native `MEMORY.md`, memory summary, rollout evidence, or SQLite file is rewritten.
+
+### Backups and rollback
+
+Each applying run with changes stores its manifest, original file contents, and report under `~/.codex/claude-sync/backups/<run-id>` (or the selected Codex home). To restore that run:
+
+```powershell
+.\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json
+```
+
+Use the backup path reported by the applying run. Rollback restores files and links only when their current state still matches what that run wrote; later user edits are preserved. Outbox history, prepared evidence, authorization records, and appended memory notes are retained because removing a file cannot reliably retract memory already processed by Codex. Live profile data and backups must remain outside this repository.
+
+### Scheduled runs and health
+
+Explicitly disabled plugins and removed source items retire only intact artifacts owned by this bridge. User edits and unavailable source installations are preserved and reported. Retirement is covered by the same backup/rollback mechanism; native memory notes remain append-only.
+
+The JSON report includes `inventory`: entry-point paths, ownership, local repository identity/version, dependency declarations and interpreter presence, plus broken-link recovery candidates. Dependency scripts are never executed during inventory. To repair only uniquely identified legacy links from approved repositories:
+
+```powershell
+.\sync-all.cmd --dry-run --repair-links --approved-repo C:\src\skill-pack --json
+.\sync-all.cmd --apply --repair-links --approved-repo C:\src\skill-pack --json
+```
+
+Ambiguous candidates remain untouched. `--external-skill-manifest` can point to an existing repository manifest. Native role files and their config entries have independent ownership hashes; read-only reviewer guidance is advisory and native permissions remain inherited.
+
+`run_profile_sync.py` is the deterministic entry point for an existing scheduler:
+
+```powershell
+python .\run_profile_sync.py --apply --write-status --probe-mcp
+```
+
+It applies the managed profile, recomputes the plan, and evaluates conflicts and missing dependencies. Exit `0` means the checked profile is healthy, `2` means unresolved findings or remaining changes, and `1` means execution failed. The JSON distinguishes deliberate compatibility exclusions from faults. Local HTTP MCP servers are initialized without invoking tools; remote servers are marked `not_checked`, and stdio commands are checked for presence only.
+
+`--write-status` writes `claude-sync/last-run.json` under the selected Codex home. It preserves the previous `last-success.json` during a run and refreshes it only after verification passes. A retained marker describes the previous successful run; the scheduler must also check the current exit code and run identity. The runner does not send messages or create scheduled tasks; connect it to the existing scheduler, task monitor and backup registration.
+
+The profile transform and health checks do not call a model. Automation that adds agent work should invoke the operator's `llmcall` interface with `mode="agent"`, inheriting its provider policy rather than embedding a second routing chain.
+
+### Profile bridge tests
+
+All tests use synthetic data in temporary directories:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+```
+
+The first command requires Python 3.11+. The second verifies the existing Windows PowerShell 5.1 memory-only bridge.
+
+## Memory-only bridge: design philosophy
+
+The remaining sections describe **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**, the original single-project entry. Its selection, output, and all-or-nothing credential rules differ from the full profile archive described above.
 
 **Stage verifiable memory updates; never pretend the two agents share a brain.**
 
