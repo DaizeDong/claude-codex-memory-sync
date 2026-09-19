@@ -1,6 +1,6 @@
-# Claude Code → Codex 记忆同步
+# Claude → Codex 配置桥接
 
-用一条本地 PowerShell 命令，把 Claude Code 的项目自动记忆转换为本机 Codex `ad_hoc` staging note。
+将同机 Claude Code 的技能、指令、兼容 MCP 配置、已审阅的 hook 适配器及项目记忆接入 Codex。先预览并备份受管改动，再应用；所有权校验保护后续人工修改，原生记忆投递只覆盖明确授权的范围。
 
 [![测试](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
@@ -11,7 +11,96 @@
 
 > 这是独立的社区项目，与 Anthropic 或 OpenAI 无隶属或官方背书关系。
 
-## ⭐ 请先阅读：设计哲学
+## 受管配置同步
+
+使用 `sync-all.cmd` 同步支持的配置组件。要求 `PATH` 中有 **Python 3.11 或更新版本**；Windows 目录链接使用 junction。原有 Windows PowerShell 5.1 单项目记忆入口继续保留，详见本文后半部分。
+
+```powershell
+# 零写入预览；未指定模式时也是这个行为。
+.\sync-all.cmd --dry-run
+
+# 查看冲突、跳过来源和兼容性详情，不输出来源正文。
+.\sync-all.cmd --dry-run --json
+
+# 创建本地备份后应用当前计划。
+.\sync-all.cmd --apply --json
+```
+
+支持的同步范围：
+
+| Claude 来源 | Codex 结果 |
+|---|---|
+| 用户 skills、已启用且已安装插件的 skills | 在 `~/.agents/skills` 建立目录链接；保留已有无关技能，报告同名冲突。 |
+| 用户和插件的 commands、agent 角色 Markdown | 转换为 skill 指令适配器；支持的 agent 定义同时生成 Codex 原生角色，无法表达的执行或工具权限限制单独报告。 |
+| 全局 `CLAUDE.md` 和用户 rules | 合并到 `~/.codex/AGENTS.md` 的哈希受管区块，保留既有正文；受管区被手动修改时报告冲突，源规则的路径过滤仍保持其作用域。 |
+| 项目 `CLAUDE.md` | 增加兼容的项目文档回退设置，保留 Codex 原有项目指令。 |
+| 兼容的用户和已启用插件 MCP 定义 | 增量合并 `config.toml` 受管区块；现有原生 MCP 名称优先，缺失环境变量和不支持的传输或设置会列入报告。 |
+| 所有非空项目记忆目录 | 归档到 `~/.codex/imports/claude-memory/`，生成项目索引；经明确授权后，由持久 outbox 向 `ad_hoc` 投递小型增量说明。 |
+| Claude hooks | 为 SessionStart、PostToolUse 和 Stop 提供已审阅的适配器，覆盖浏览器隔离检查、文档预算反馈和登录态导出/吸收；保留现有 Codex hooks，明确报告不支持的源命令。运行时可能需要原生信任及新会话。 |
+
+这套实现用于**同一台机器**：链接的 skills 和适配后的本地脚本仍依赖原安装目录，不是换机可独立使用的完整复制。同步保留 Codex 当前模型、provider、认证和权限配置，不导入 Claude 登录及会话状态。
+
+默认来源为 `CLAUDE_CONFIG_DIR`，未设置时用用户主目录下的 `.claude` 目录；默认目标为 `CODEX_HOME`，未设置时用 `~/.codex`。需要时可传 `--claude-home`、`--codex-home`、`--skills-home`。当两份配置并存时，优先使用活体 `.claude/.claude.json`，再回退到旧版 `~/.claude.json`。
+
+### 记忆归档行为
+
+完整同步递归读取 archive 目录以外的 `*.md`，排除空项目目录；项目路径来自当前 Claude 配置的精确编码匹配，也可通过已审阅的路径证据补充。现有映射和冲突优先保留，无法映射的项目保留原 key，不猜测路径。支持 UTF-8/BOM 和带 BOM 的 UTF-16，统一输出 UTF-8；单文件上限 1 MiB，拒绝 symlink/junction，跳过疑似凭据。报告仅显示跳过文件名和原因，不显示正文或凭据值。
+
+控制字符**只在归档副本中**转成 `\u0008` 等可见转义，报告记录字符编码和位置，源文件保持不变。明确的 API key 文档占位模板可以保留，真实凭据匹配仍会拦截。
+
+每次运行都重新计算内容哈希，索引不加入运行时间，因此未变化的来源不会产生新 note。来源变化时最多追加一个不超过 8 KiB 的 note，指向归档索引。本机缺少 `ad_hoc` 入口约定时，归档仍可读取，报告将 note 暂存标为未支持。Codex 原生记忆整理是独立的异步过程；暂存成功不代表原生记忆已经整合，也不保证某条事实会被召回。
+
+当前索引定义有效来源快照。源文件被删除或排除后，归档计划会将确认归属且未被修改的旧副本移入现有私有同步备份，退出日常检索目录。未确认归属的历史副本需要按准确哈希审阅；用户编辑会保留并报告。归属记录沿用现有 memory outbox，事务接入和回滚约定见[归档清理说明](docs/MEMORY_ARCHIVE_HYGIENE.md)。同步不会改写原生 `MEMORY.md`、记忆摘要、rollout evidence 或 SQLite 文件。
+
+### 备份与回滚
+
+有变更的应用运行会在 `~/.codex/claude-sync/backups/<run-id>` 保存清单、原文件内容和报告；指定了其他 Codex home 时使用对应位置。回滚命令：
+
+```powershell
+.\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json
+```
+
+使用应用结果中给出的实际备份路径。回滚只恢复当前状态仍与该次写入一致的文件或链接，保留同步后的手动编辑。追加的记忆 note 会保留，因为删除文件不能可靠撤回 Codex 已经处理的记忆。真实配置数据和备份必须位于本仓库之外。
+
+### 计划运行与健康检查
+
+插件被明确停用或源文件删除后，只清理本工具管理且未被手动修改的内容。手动编辑和暂时不可用的源安装目录会保留并报告。清理操作同样有备份和回滚，原生记忆 note 仍只追加。
+
+JSON 的 `inventory` 包含入口路径、归属、来源仓库与版本、依赖声明和解释器是否存在，并列出断链恢复候选。盘点不会执行依赖脚本。只有已批准仓库中存在唯一对应来源的旧链接才会被修复：
+
+```powershell
+.\sync-all.cmd --dry-run --repair-links --approved-repo C:\src\skill-pack --json
+.\sync-all.cmd --apply --repair-links --approved-repo C:\src\skill-pack --json
+```
+
+多个候选无法区分时保持原样。可以用 `--external-skill-manifest` 指定已有来源仓库清单，或设置 `CLAUDE_CONFIG_REPO`，指向包含 `external-skill-repos.json` 的配置目录；未配置时不会猜测私人仓库位置。原生角色文件和配置入口分别记录受管哈希；审阅角色的只读要求属于行为指令，运行权限仍由 Codex 当前配置决定。
+
+现有任务调度器可以调用确定性入口：
+
+```powershell
+python .\run_profile_sync.py --apply --write-status --probe-mcp
+```
+
+它先应用受管配置，再重新计算计划，检查未解决的冲突和缺失依赖。退出码 `0` 表示检查通过，`2` 表示存在待处理问题或剩余变更，`1` 表示执行失败。JSON 将兼容性排除项与故障分开列出。本地 HTTP MCP 只做初始化，不调用工具；外部服务标为 `not_checked`，stdio 服务只检查启动命令是否存在。
+
+`--write-status` 会在所选 Codex home 下写入 `claude-sync/last-run.json`。每次开始前移除旧的 `last-success.json`，只有复查通过才生成新的成功标记。任务监控应以退出码为准，并检查成功标记是否过期。入口不发送消息、不创建任务，由现有调度、监控和备份体系统一管理。
+
+同步和健康检查本身不调用模型。自动化流程需要 agent 时，应通过已有 `llmcall` 接口的 `mode="agent"` 调用，沿用其路由策略。
+
+### 完整配置测试
+
+测试数据全部在临时目录中合成：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+```
+
+第一条要求 Python 3.11+；第二条验证原有 Windows PowerShell 5.1 单项目记忆桥。
+
+## 原有单项目记忆桥：设计哲学
+
+下文继续介绍 **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**。它是原有单项目入口，其筛选方式、输出和凭据整批拦截规则，与上面的完整配置归档不同。
 
 **暂存可验证的记忆更新，不假装两个 Agent 共享同一颗脑。**
 

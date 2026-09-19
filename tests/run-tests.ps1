@@ -330,16 +330,17 @@ try {
         Assert-Equal 1 ([int]$two.Json.notes_written) 'Update write count.'
         $notes = Get-NoteFiles $case
         Assert-Equal 2 $notes.Count 'Update must append one note.'
-        $text = [System.IO.File]::ReadAllText($notes[-1].FullName,$script:Utf8NoBom)
-        foreach ($marker in @('<!-- ccms-metadata-v1','<!-- ccms-previous-begin -->','<!-- ccms-previous-end -->','<!-- ccms-current-begin -->','<!-- ccms-current-end -->')) { Assert-Contains $text $marker ('Missing update marker: ' + $marker) }
+        $updatedNote = @($notes | Where-Object { [System.IO.File]::ReadAllText($_.FullName,$script:Utf8NoBom).Contains('Operation: update') })[0]
+        $text = [System.IO.File]::ReadAllText($updatedNote.FullName,$script:Utf8NoBom)
+        foreach ($marker in @('<!-- canonical-memory-increment:','<!-- ccms-previous-begin -->','<!-- ccms-previous-end -->','<!-- ccms-current-begin -->','<!-- ccms-current-end -->')) { Assert-Contains $text $marker ('Missing update marker: ' + $marker) }
         Assert-True ($text -match '(?m)^previous_import_id=[0-9a-f]{64}$') 'previous_import_id does not supersede the prior import.'
         Assert-Contains $text '> - Version one durable fact.' 'Previous snapshot is missing or unquoted.'
         Assert-Contains $text '> - Version two durable fact.' 'Current snapshot is missing or unquoted.'
 
-        Write-Utf8File $notes[-1].FullName ($text.Replace('> - Version one durable fact.','> - Forged previous fact.'))
+        Write-Utf8File $updatedNote.FullName ($text.Replace('> - Version one durable fact.','> - User edited previous fact.'))
         $before = Get-TreeSnapshot $case.Codex
         $tampered = Invoke-SyncProcess (New-SyncParameters $case)
-        Assert-Equal 1 $tampered.ExitCode 'Tampered previous payload was accepted.'
+        Assert-Equal 0 $tampered.ExitCode 'Published receipt must survive a later native edit.'
         Assert-Equal 0 ([int]$tampered.Json.notes_written) 'Tampered previous payload wrote a note.'
         Assert-Equal $before (Get-TreeSnapshot $case.Codex) 'Tampered previous payload changed files.'
     }
@@ -486,8 +487,9 @@ try {
         Write-Utf8File (Join-Path $case.Notes $otherName) "broken other-project note`n"
         $first = Invoke-SyncProcess (New-SyncParameters $case)
         Assert-Equal 0 $first.ExitCode 'Other-project history was not isolated.'
-        $current = @(Get-ChildItem -LiteralPath $case.Notes -File | Where-Object { $_.Name -like ('*-ccms-v1-' + $first.Json.project_id + '-*.md') })
-        Assert-Equal 1 $current.Count 'Could not identify the generated current-project note.'
+        $preparedRoot = Join-Path (Split-Path -Parent $case.Codex) 'claude-sync/memory-outbox/prepared'
+        $current = @(Get-ChildItem -LiteralPath $preparedRoot -File)
+        Assert-Equal 1 $current.Count 'Could not identify the immutable prepared evidence.'
         $original = [System.IO.File]::ReadAllText($current[0].FullName,$script:Utf8NoBom)
 
         Write-Utf8File $current[0].FullName ($original.Replace('> - Baseline fact.','> - Tampered fact.'))
@@ -496,7 +498,7 @@ try {
         Assert-Equal 1 $tampered.ExitCode 'Tampered history was accepted.'
         Assert-Equal $before (Get-TreeSnapshot $case.Codex) 'Tampered history caused a write.'
 
-        Write-Utf8File $current[0].FullName ($original.Replace('schema=ccms.note/v1',"schema=ccms.note/v1`nschema=ccms.note/v1"))
+        Write-Utf8File $current[0].FullName ($original + "`ninvalid extra envelope data`n")
         $before = Get-TreeSnapshot $case.Codex
         $duplicate = Invoke-SyncProcess (New-SyncParameters $case)
         Assert-Equal 1 $duplicate.ExitCode 'Duplicate metadata was accepted.'

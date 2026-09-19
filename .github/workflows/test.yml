@@ -17,3 +17,10 @@ jobs:
       - name: Run black-box tests
         shell: powershell
         run: .\tests\run-tests.ps1
+      - name: Set up Python for profile sync
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test profile sync and rollback
+        shell: powershell
+        run: python -m unittest discover -s tests -p "test_*.py" -v

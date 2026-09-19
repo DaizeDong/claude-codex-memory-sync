@@ -1,5 +1,6 @@
 .claude/
 .codex/
+.agents/
 .env
 .env.*
 !.env.example
@@ -15,3 +16,7 @@
 Thumbs.db
 test-results/
 __pycache__/
+.superpowers/sdd/infra-20260917/T03-guards-candidate/
+
+# Local development and verification output
+/.superpowers/
