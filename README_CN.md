@@ -1,27 +1,119 @@
-# Claude Code → Codex 记忆同步
+# Claude Code → Codex 配置与记忆同步
 
-用一条本地 PowerShell 命令，把 Claude Code 的项目自动记忆转换为本机 Codex `ad_hoc` staging note。
+把本地 Claude skills、指令、兼容的 MCP 配置和项目记忆同步到 Codex。支持先预览、备份后应用和增量重跑。
 
 [![测试](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
 [![许可证：MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![语言](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#语言)
+[![语言](https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-EN%20%2F%20CN-blue?style=flat)](#语言)
+[![Roadmap](https://img.shields.io/badge/Roadmap-v1.0.0-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
 > 这是独立的社区项目，与 Anthropic 或 OpenAI 无隶属或官方背书关系。
 
-## ⭐ 请先阅读：设计哲学
+## ⭐ 先读这里：设计理念
 
-**暂存可验证的记忆更新，不假装两个 Agent 共享同一颗脑。**
+**暂存可验证的更新，不假装两个 Agent 共享同一颗脑。**
 
-这个工具有意保持小而简单。它遵循三条原则：
+这个工具有意保持小而简单。两个入口遵循同一组三条原则：
 
-1. **只填补缺失的接口，不增加新的 Agent 交互面。** Claude Code 已经保存项目记忆，Codex 也已经负责自己的记忆整理；本工具只把一种表示转换为本机检测到的入口约定所接受的格式。它不增加 Agent 终端、daemon、MCP server、数据库、向量库或模型调用。
-2. **通过本机检测到的入口约定暂存，不伪装成 Codex 内部组件。** 脚本只向 `extensions\ad_hoc\notes\` 追加自包含 note，不改写 Codex 的记忆摘要、rollout evidence 或 SQLite 状态。“同步成功”只表示“已安全暂存”，不表示“已经整理或保证会被召回”。
-3. **记忆质量比记忆数量更重要。** 先 dry run、保守筛选、发现疑似凭据时 fail closed、限制所有输入规模，并进行增量去重。把所有日志和过期决策都复制过去，只会让记忆池更大，甚至可能让召回质量更差。
+1. **只填补缺失的接口，不增加新的 Agent 交互面。** Claude Code 已经保存 skills、指令和项目记忆，Codex 也已经负责自己的配置和记忆整理；本工具只把一种表示转换为另一种，到此为止。它不增加 Agent 终端、daemon、MCP server、数据库、向量库，也不自己调用模型。
+2. **通过本机安装暴露的约定写入，不伪装成 Codex 内部组件。** 托管区块带哈希追踪且可回滚，记忆以自包含 note 的形式进入检测到的入口约定，不属于本桥的原生设置全部保留。一次成功的运行只表示“已安全暂存”，不表示“已经整理或保证会被召回”。
+3. **质量比数量重要，写入之前先预览。** 默认 dry run，筛选保守，所有输入都有上限，发现疑似凭据时整批 fail closed，未变内容不会重复暂存。把所有日志和过期决策都复制过去，只会让记忆池更大，甚至可能让召回质量更差。
 
-设计目标是成为两个现有记忆系统之间最小、可审计的桥，而不是通用共享记忆平台。
+设计目标是成为两个现有配置与记忆系统之间最小、可审计的桥，而不是通用共享记忆平台。
+
+## 完整配置同步
+
+使用 `sync-all.cmd` 同步完整本地配置。要求 `PATH` 中有 **Python 3.11 或更新版本**；Windows 目录链接使用 junction。原有 Windows PowerShell 5.1 单项目记忆入口继续保留，详见本文后半部分。
+
+```powershell
+# 零写入预览；未指定模式时也是这个行为。
+.\sync-all.cmd --dry-run
+
+# 查看冲突、跳过来源和兼容性详情，不输出来源正文。
+.\sync-all.cmd --dry-run --json
+
+# 创建本地备份后应用当前计划。
+.\sync-all.cmd --apply --json
+```
+
+完整同步覆盖：
+
+| Claude 来源 | Codex 结果 |
+|---|---|
+| 用户 skills、已启用且已安装插件的 skills | 在 `~/.agents/skills` 建立目录链接；保留已有无关技能，报告同名冲突。 |
+| 用户和插件的 commands、agent 角色 Markdown | 转换为 skill 指令适配器；支持的 agent 定义同时生成 Codex 原生角色，无法表达的执行或工具权限限制单独报告。 |
+| 全局 `CLAUDE.md` 和用户 rules | 合并到 `~/.codex/AGENTS.md` 的哈希受管区块，保留既有正文；受管区被手动修改时报告冲突，源规则的路径过滤仍保持其作用域。 |
+| 项目 `CLAUDE.md` | 增加兼容的项目文档回退设置，保留 Codex 原有项目指令。 |
+| 兼容的用户和已启用插件 MCP 定义 | 增量合并 `config.toml` 受管区块；现有原生 MCP 名称优先，缺失环境变量和不支持的传输或设置会列入报告。 |
+| 所有非空项目记忆目录 | 归档到 `~/.codex/imports/claude-memory/`，生成项目索引；每次来源快照变化最多追加一个小型 `ad_hoc` note。 |
+| Claude hooks | 列出并逐项审阅协议；仅已审阅的本机 Stop 脚本 `pw-auth.py absorb` 和 `pw_export_guard.py` 有专用 JSON 输出适配器，保留现有 Codex hooks，其余 hook 标为未支持。 |
+
+这套实现用于**同一台机器**：链接的 skills 和适配后的本地脚本仍依赖原安装目录，不是换机可独立使用的完整复制。同步保留 Codex 当前模型、provider、认证和权限配置，不导入 Claude 登录及会话状态。
+
+默认来源为 `CLAUDE_CONFIG_DIR`，未设置时用 用户主目录下的 `.claude` 目录；默认目标为 `CODEX_HOME`，未设置时用 `~/.codex`。需要时可传 `--claude-home`、`--codex-home`、`--skills-home`。当两份配置并存时，优先使用活体 `.claude/.claude.json`，再回退到旧版 `~/.claude.json`。
+
+### 记忆归档行为
+
+完整同步递归读取 archive 目录以外的 `*.md`，排除空项目目录；只有活体 Claude 配置中存在精确编码匹配时才标记项目路径。无法映射的项目保留原 key，不猜测路径。支持 UTF-8/BOM 和带 BOM 的 UTF-16，统一输出 UTF-8；单文件上限 1 MiB，拒绝 symlink/junction，跳过疑似凭据。报告仅显示跳过文件名和原因，不显示正文或凭据值。
+
+控制字符**只在归档副本中**转成 `\u0008` 等可见转义，报告记录字符编码和位置，源文件保持不变。明确的 API key 文档占位模板可以保留，真实凭据匹配仍会拦截。
+
+每次运行都重新计算内容哈希，索引不加入运行时间，因此未变化的来源不会产生新 note。来源变化时最多追加一个不超过 8 KiB 的 note，指向归档索引。本机缺少 `ad_hoc` 入口约定时，归档仍可读取，报告将 note 暂存标为未支持。Codex 原生记忆整理是独立的异步过程；暂存成功不代表原生记忆已经整合，也不保证某条事实会被召回。
+
+当前索引定义有效来源快照。源文件被删除或跳过后，磁盘上可能保留旧归档副本，但索引不会把它们列为当前内容。同步不会改写原生 `MEMORY.md`、记忆摘要、rollout evidence 或 SQLite 文件。
+
+### 备份与回滚
+
+有变更的应用运行会在 `~/.codex/claude-sync/backups/<run-id>` 保存清单、原文件内容和报告；指定了其他 Codex home 时使用对应位置。回滚命令：
+
+```powershell
+.\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json
+```
+
+使用应用结果中给出的实际备份路径。回滚只恢复当前状态仍与该次写入一致的文件或链接，保留同步后的手动编辑。追加的记忆 note 会保留，因为删除文件不能可靠撤回 Codex 已经处理的记忆。真实配置数据和备份必须位于本仓库之外。
+
+### 计划运行与健康检查
+
+插件被明确停用或源文件删除后，只清理本工具管理且未被手动修改的内容。手动编辑和暂时不可用的源安装目录会保留并报告。清理操作同样有备份和回滚，原生记忆 note 仍只追加。
+
+JSON 的 `inventory` 包含入口路径、归属、来源仓库与版本、依赖声明和解释器是否存在，并列出断链恢复候选。盘点不会执行依赖脚本。只有已批准仓库中存在唯一对应来源的旧链接才会被修复：
+
+```powershell
+.\sync-all.cmd --dry-run --repair-links --approved-repo C:\src\skill-pack --json
+.\sync-all.cmd --apply --repair-links --approved-repo C:\src\skill-pack --json
+```
+
+多个候选无法区分时保持原样。可以用 `--external-skill-manifest` 指定已有来源仓库清单。原生角色文件和配置入口分别记录受管哈希；审阅角色的只读要求属于行为指令，运行权限仍由 Codex 当前配置决定。
+
+现有任务调度器可以调用确定性入口：
+
+```powershell
+python .\run_profile_sync.py --apply --write-status --probe-mcp
+```
+
+它先应用受管配置，再重新计算计划，检查未解决的冲突和缺失依赖。退出码 `0` 表示检查通过，`2` 表示存在待处理问题或剩余变更，`1` 表示执行失败。JSON 将兼容性排除项与故障分开列出。本地 HTTP MCP 只做初始化，不调用工具；外部服务标为 `not_checked`，stdio 服务只检查启动命令是否存在。
+
+`--write-status` 会在所选 Codex home 下写入 `claude-sync/last-run.json`。每次开始前移除旧的 `last-success.json`，只有复查通过才生成新的成功标记。任务监控应以退出码为准，并检查成功标记是否过期。入口不发送消息、不创建任务，由现有调度、监控和备份体系统一管理。
+
+同步和健康检查本身不调用模型。自动化流程需要 agent 时，应通过已有 `llmcall` 接口的 `mode="agent"` 调用，沿用其路由策略。
+
+### 完整配置测试
+
+测试数据全部在临时目录中合成：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+```
+
+第一条要求 Python 3.11+；第二条验证原有 Windows PowerShell 5.1 单项目记忆桥。
+
+## 原有单项目记忆桥
+
+下文继续介绍 **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**。它是原有单项目入口，把上面三条原则应用在单个项目的记忆目录上；它的筛选方式、输出和凭据整批拦截规则，与上面的完整配置归档不同。
 
 ## 它是什么（以及不是什么）
 
@@ -254,6 +346,10 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 English（[`README.md`](README.md)，权威版本）· 中文（`README_CN.md`）
 
-## 许可证
+## Roadmap、贡献与许可
 
-[MIT](LICENSE)
+见 [ROADMAP.md](ROADMAP.md) · [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE)（MIT）。
+
+欢迎提 issue 和 PR；本仓没有 `CONTRIBUTING.md`，所以一个改动要过的闸门就是 `.github/workflows/` 里的那几道。
+
+与本家仓库规范之间的偏离，以及每一条的理由，记在 [docs/2026-09-22-spec-adaptation.md](docs/2026-09-22-spec-adaptation.md)。
