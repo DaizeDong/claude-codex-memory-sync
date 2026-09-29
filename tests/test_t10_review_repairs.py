@@ -45,7 +45,8 @@ def test_retracted_selection_cannot_execute_superseded_policy(tmp_path, transiti
     elif transition == 'missing_requirement':
         policy['entries'][0]['requires'].append('synthetic.missing')
     else:
-        policy, caps = None, None
+        # Explicit null is malformed input; omission withdraws configuration.
+        policy, caps = bridge.OMITTED, bridge.OMITTED
     changes, report = sync.build_plan(claude, codex, shared, runtime_policy=policy, capabilities=caps)
     sync.apply_plan(list(changes), report, codex, shared)
     assert adapters.select_entrypoint(selection, {'task': 'image'})['status'] != 'selected'

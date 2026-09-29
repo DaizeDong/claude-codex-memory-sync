@@ -1,4 +1,5 @@
 """Resolve the client-loaded task entrypoint through the pinned runtime policy."""
+import hashlib
 import json
 from pathlib import Path
 
@@ -30,6 +31,23 @@ def select_entrypoint(path, request):
         if '..' in target.parts or not target.is_relative_to(path.parent):
             raise ValueError('selection_path_outside_bundle')
         assert_plain_path(target)
+    members = alternative.get('members')
+    if (not isinstance(members, dict) or not members
+            or not {alternative['descriptor'], alternative['entrypoint']}.issubset(members)):
+        return dict(decision, status='blocked', reason='selected_adapter_unverified', selection=None)
+    for relative, expected_hash in members.items():
+        member = Path(relative)
+        if (member.is_absolute() or member.drive or '..' in member.parts
+                or not (path.parent / member).is_relative_to(entrypoint_path.parent)):
+            raise ValueError('selection_path_outside_bundle')
+        target = path.parent / member
+        assert_plain_path(target)
+        try:
+            content = target.read_bytes()
+        except OSError:
+            return dict(decision, status='blocked', reason='selected_adapter_missing', selection=None)
+        if hashlib.sha256(content).hexdigest() != expected_hash:
+            return dict(decision, status='blocked', reason='selected_adapter_changed', selection=None)
     descriptor = load_descriptor(descriptor_path)
     if descriptor['artifact_hash'] != alternative['artifact_hash']:
         raise ValueError('selected_adapter_changed')

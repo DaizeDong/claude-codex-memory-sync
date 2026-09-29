@@ -17,6 +17,8 @@ import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
 import profile_catalog as sources
+from profile_bridge import ownership
+from profile_bridge.resources import ResourceError, describe_entrypoint
 
 
 OWNER = "claude-codex-profile-sync"
@@ -142,6 +144,9 @@ def _safe_remote(value: str | None) -> str | None:
 
 
 def repository_info(path: Path, cache: dict) -> dict:
+    # Managed logical sources (for example a selection policy) are not paths.
+    if not path.is_absolute():
+        return {"status": "unavailable", "reason": "source_not_absolute_path"}
     resolved = path.resolve()
     root = next((p for p in (resolved, *resolved.parents) if (p / ".git").exists()), None)
     if root is None:
@@ -192,6 +197,57 @@ def approved_roots(claude: Path, explicit, manifest: Path | None, warnings: list
             warnings.append({"status": "unavailable", "reason": "external_skill_manifest_invalid",
                              "source": str(manifest), "catalog_problem": problem})
     return sorted(roots)
+
+
+def _owned_file(path, records):
+    record = records.get(str(path), {})
+    expected = record.get('original', {})
+    if record.get('owner') != OWNER or expected.get('kind') != 'file':
+        raise ResourceError('resource_provenance_unverified')
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise ResourceError('owned_resource_missing') from exc
+    if ownership.digest(data) != expected.get('sha256'):
+        raise ResourceError('owned_resource_changed')
+    return data
+
+
+def resource_context(entry, source_record, record, records, repository):
+    """Use the file containing relative links, after checking managed provenance."""
+    entrypoint = entry / 'SKILL.md'
+    root = repository.get('root') or source_record['resolved_path']
+    basis = 'repository' if repository.get('root') else 'catalog_source'
+    if record.get('owner') == OWNER and record.get('original', {}).get('kind') == 'file':
+        wrapper = _owned_file(entrypoint, records)
+        if ownership.verify(wrapper, 'adapter')['status'] != 'verified':
+            raise ResourceError('adapter_provenance_unverified')
+        original = Path(record['source'])
+        if not original.is_absolute():
+            raise ResourceError('source_not_absolute_path')
+        descriptor_path = entry / 'workflow.json'
+        if descriptor_path.exists() or str(descriptor_path) in records:
+            try:
+                descriptor = json.loads(_owned_file(descriptor_path, records))
+                if Path(descriptor['source_file']) != original:
+                    raise ValueError('source mismatch')
+                relative = original.relative_to(descriptor['resource_root'])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ResourceError('overlay_provenance_invalid') from exc
+            root = entry / 'payload'
+            entrypoint = root / relative
+            _owned_file(entrypoint, records)
+            basis = 'owned_overlay_payload'
+        else:
+            try:
+                if ownership.digest(original.read_bytes()) != record.get('source_sha256'):
+                    raise ResourceError('adapter_source_changed')
+            except OSError as exc:
+                raise ResourceError('adapter_source_missing') from exc
+            entrypoint = original
+            root = repository.get('root') or record.get('provider_root') or source_record['resolved_path']
+            basis = 'managed_forwarding_source'
+    return {'status': 'available', **describe_entrypoint(entrypoint, root), 'source_root_basis': basis}
 
 
 def inventory_sources(claude: Path, codex: Path, skills: Path, *, approved_repos=(), external_manifest: Path | None = None, snapshot=None) -> dict:
@@ -249,7 +305,12 @@ def inventory_sources(claude: Path, codex: Path, skills: Path, *, approved_repos
                    "dependencies": dependencies(entry) if ep else {"check": "not_checked", "declarations": [], "executables": []},
                    **sources.projection(source_record, ep)}
             if record.get("owner") == OWNER:
-                row["provenance"] = {key: record[key] for key in ("provider", "plugin", "provider_root", "source_sha256", "original") if key in record}
+                row["provenance"] = {key: record[key] for key in ("provider", "plugin", "provider_root", "source_sha256", "original", "source_id", "catalog_identity") if key in record}
+            if ep:
+                try:
+                    row['resource_context'] = resource_context(entry, source_record, record, owned, row['repository'])
+                except ResourceError as exc:
+                    row['resource_context'] = {'status': 'unavailable', 'reason': str(exc)}
             if is_link(entry):
                 row["link_target"] = link_target(entry)
             if broken:

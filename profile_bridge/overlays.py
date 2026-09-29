@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from skill_smith import conflicts, overlays, role_entrypoints
+from .descriptions import normalize_description
 
 
 OMITTED = object()
@@ -125,6 +126,7 @@ def bundle(name, description, target, descriptor):
     if descriptor.get('status') != 'ready' or not overlays.validate(descriptor, target_runtime='codex'):
         raise ValueError('overlay_not_ready_or_stale')
     target = Path(target)
+    description = normalize_description(description, fallback=f"Use {name} when explicitly requested.")
     descriptor_path = target.parent / 'workflow.json'
     source_relative = Path(descriptor['source_file']).relative_to(descriptor['resource_root'])
     source_payload = target.parent / 'payload' / source_relative

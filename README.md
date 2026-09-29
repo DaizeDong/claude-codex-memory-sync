@@ -77,6 +77,18 @@ The JSON report includes `inventory`: entry-point paths, ownership, local reposi
 
 Ambiguous candidates remain untouched. `--external-skill-manifest` can point to an existing repository manifest. Native role files and their config entries have independent ownership hashes; read-only reviewer guidance is advisory and native permissions remain inherited.
 
+For linked skills, resolve relative resources from the canonical source entrypoint. Use both `resource_context.canonical_entrypoint` and `resource_context.source_root` from the inventory. Forwarding wrappers point to their verified upstream file; overlay bundles point to their owned local payload. Changed wrapper, descriptor, or payload entrypoint content makes the context unavailable. A resource in a sibling directory may require an explicitly approved package root. Run this command in the Python environment where `profile-sync` is installed:
+
+```powershell
+python -m profile_bridge.resources --entrypoint C:\skills\example\SKILL.md --source-root C:\src\example-package --reference ../../shared-references/rules.md
+```
+
+The command prints the existing canonical file path as JSON and exits `0`. Missing files, absolute or remote references, and paths escaping the selected root through `..` or symlinks return a reason and exit `2`. It does not read workflow content, execute resources, or change the profile. Keep the root tied to the known package; do not broaden it to make a failed reference pass.
+
+The managed instruction block also explains host capability checks and writing-skill scope. Claude-specific tools and Cowork actions require actual host support; installation alone establishes no runtime capability. Named-persona writing requires explicit persona intent. Raw skills must have valid YAML frontmatter with unique mapping keys and nonempty string names and descriptions before installation is planned. Adapter descriptions use parsed source scalars, preserving comparison conditions and inline trigger text while example sections remain in the source workflow. Inventory preserves catalog source hashes and plugin versions, and reports unavailable git provenance without inventing an upstream revision.
+
+Runtime selection verifies every declared generated member of the selected alternative, including its installed instructions, descriptor and payload, against hashes stored in the selection snapshot. Missing or changed members block that alternative and preserve the files. An older selection snapshot without member hashes must be regenerated through the normal profile plan before it can select an alternative.
+
 `run_profile_sync.py` is the deterministic entry point for an existing scheduler:
 
 ```powershell
