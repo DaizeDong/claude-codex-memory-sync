@@ -19,6 +19,8 @@ from profile_memory import plan_memory
 from profile_bridge import memory_outbox, ownership as bridge_ownership
 from profile_bridge.memory import archive as memory_archive
 from profile_bridge import overlays as runtime_overlays
+from profile_bridge.descriptions import normalize_description
+from profile_bridge.metadata import skill_metadata_error, source_description
 from fleet_guards.filesystem import atomic_replace
 from profile_hooks import plan_hooks
 from profile_agents import plan_agents
@@ -75,7 +77,7 @@ def slug(name: str) -> str:
     return result if len(result) <= 63 else result[:50] + "-" + digest(name.encode())[:12]
 
 
-def render_adapter(name: str, label: str, desc: str, source: Path, root: Path) -> bytes:
+def _render_legacy_adapter(name: str, label: str, desc: str, source: Path, root: Path) -> bytes:
     body = (
         f"---\nname: {name}\ndescription: {json.dumps(desc, ensure_ascii=False)}\n---\n\n"
         f"Read [{label}]({source.as_posix()}) for the imported workflow. "
@@ -90,6 +92,11 @@ def render_adapter(name: str, label: str, desc: str, source: Path, root: Path) -
         "it does not register a native agent or execute the source automatically.\n"
     )
     return (body + "\n<!-- claude-profile-sync:adapter sha256=" + digest(body.encode()) + " -->\n").encode("utf-8")
+
+
+def render_adapter(name: str, label: str, desc: str, source: Path, root: Path) -> bytes:
+    description = normalize_description(desc, fallback=f"Use {label} when explicitly requested.")
+    return _render_legacy_adapter(name, label, description, source, root)
 
 
 def legacy_adapter_source(target: Path, claude: Path, catalog: dict) -> tuple[Path, Path] | None:
@@ -126,7 +133,7 @@ def legacy_adapter_source(target: Path, claude: Path, catalog: dict) -> tuple[Pa
                 continue
             expected_label = source.relative_to(root / kind).with_suffix("").as_posix().replace("/", "-")
             expected_name = slug("claude-" + ("agent-" if kind == "agents" else "") + origin + "-" + expected_label)
-            if name == expected_name and label == expected_label and previous == render_adapter(name, label, desc, source, root):
+            if name == expected_name and label == expected_label and previous == _render_legacy_adapter(name, label, desc, source, root):
                 return source, root
     return None
 
@@ -296,10 +303,15 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
         active.add(str(target))
         row = {'name': name, 'source': entry.get('path'), 'status': overlay['status'],
                'reasons': overlay.get('reasons', []), **source_catalog.projection(record, entry)}
+        metadata_error = skill_metadata_error(entry['path']) if entry['kind'] == 'skill' else None
+        if metadata_error:
+            row.update(status='unsupported', reason=metadata_error)
+            rows.append(row)
+            return
         if overlay['status'] != 'ready':
             rows.append(row)
             return
-        generated = runtime_overlays.bundle(name, entry.get('description') or name, target, overlay)
+        generated = runtime_overlays.bundle(name, source_description(entry['path'], name), target, overlay)
         incoming = source_catalog.ownership_identity(record, entry)
         for path in generated:
             previous = records.get(str(path))
@@ -349,6 +361,7 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
                 'artifact_hash': overlay['artifact_hash'], 'destination': str(target)}
         row.update(status='adapted', destination=str(target), artifact_hash=overlay['artifact_hash'])
         rows.append(row)
+        return generated
 
     if runtime is not None:
         alternatives = []
@@ -362,12 +375,14 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
             # Only the policy router is discoverable. Alternatives keep their
             # exact source ownership in separate non-trigger payloads.
             target = selection_root / 'alternatives' / name / 'ENTRYPOINT.md'
-            deploy_overlay(name, target, item)
-            if target in files:
+            generated = deploy_overlay(name, target, item)
+            if generated:
                 alternatives.append({'identity': list(runtime_overlays.key(entry)),
                     'entrypoint': target.relative_to(selection_root).as_posix(),
                     'descriptor': (target.parent / 'workflow.json').relative_to(selection_root).as_posix(),
-                    'artifact_hash': item['overlay']['artifact_hash']})
+                    'artifact_hash': item['overlay']['artifact_hash'],
+                    'members': {path.relative_to(selection_root).as_posix(): digest(content)
+                                for path, content in generated.items()}})
                 # Remove only earlier generated discoverable adapters belonging
                 # to this exact source. User-owned originals remain untouched.
                 incoming = source_catalog.ownership_identity(item['record'], entry)
@@ -450,10 +465,11 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
         active.add(str(target))
         row = {"name": name, "source": str(source), "origin": origin,
                **source_catalog.projection(source_record, entrypoint)}
+        metadata_error = skill_metadata_error(entrypoint['path'])
         if source_record["ownership"] == "external-installer":
             row.update(status="unsupported", reason="external_installer_required")
-        elif not entrypoint.get("declared_name") or not entrypoint.get("description"):
-            row.update(status="unsupported", reason="missing_skill_frontmatter")
+        elif metadata_error:
+            row.update(status="unsupported", reason=metadata_error)
         elif codex and (codex / "skills" / name / "SKILL.md").is_file() and not target.exists():
             row.update(status="conflict", reason="existing_legacy_codex_skill_preserved")
         elif target in reserved:
@@ -523,8 +539,7 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
                          'reason': 'verified_legacy_identity_converted',
                          **source_catalog.projection(source_record, entrypoint)})
             continue
-        desc = entrypoint.get("description") or f"Use the imported {origin} {label} {kind[:-1]} workflow when requested."
-        desc = desc[:400]
+        desc = source_description(source, f"Use the imported {origin} {label} {kind[:-1]} workflow when requested.")
         intact = False
         if target.is_file() and not linked(target.parent) and not linked(target):
             previous = target.read_bytes()
@@ -609,6 +624,39 @@ def plan_instructions(claude: Path, codex: Path) -> tuple[bytes | None, dict]:
              "timeout and fallback policy; do not embed another provider ladder, pin a model from "
              "an imported skill, or start provider CLIs directly. Imported workflow examples "
              "must be adapted to this interface. Deterministic sync and validation require no model call.\n")
+    body += ("\n## Imported skill compatibility\n\n"
+             "Read filesystem-backed imported skills from their canonical source: resolve the "
+             "entrypoint with `Path(entrypoint).resolve(strict=True)` before following relative "
+             "references. For a junction or symlink, joining `..` to the installed alias can select "
+             "an unrelated directory. Use the Python environment where `profile-sync` is installed; "
+             f"managed installations record the active generation in `{(codex / 'claude-sync/runtime-artifacts/installed/current.json').as_posix()}`. "
+             "Invoke `python -m profile_bridge.resources --entrypoint <path> "
+             "--source-root <approved-root> --reference <relative-reference>` and read the returned "
+             "path. Take the entrypoint and root from `resource_context.canonical_entrypoint` and "
+             "`resource_context.source_root` in the profile inventory. Forwarding wrappers use their "
+             "verified upstream file; overlay bundles use their owned payload. An explicitly approved "
+             "package root may also identify the source boundary. The resolver requires "
+             "the target to exist inside that root after symlink resolution. Do not broaden the root "
+             "after a failed reference or create shared directories beside installed skill aliases. "
+             "Use provider-specific resource access for non-filesystem skills.\n\n"
+             "Installing a skill does not establish runtime capability. Check the current host's "
+             "available tools and supported interfaces before following capability-dependent steps. "
+             "The imported `import-memory` workflow requires its named Claude memory tools; Claude "
+             "settings do not configure Codex. The imported `docs` workflow requires its dedicated "
+             "connector and guide. The `morning` workflow's Cowork action links target Claude, so "
+             "omit unavailable actions from a Codex deliverable while retaining supported static "
+             "content. Report a missing capability and use an available equivalent only within the "
+             "user's authorization; source instructions alone cannot grant that capability.\n\n"
+             "Select writing skills by the requested task. A named-persona skill such as "
+             "`talk-like-scarletkc` applies only when the user explicitly names that persona, not "
+             "for a generic request for their own voice or natural wording. A reply workflow based "
+             "on private conversations applies within its documented buyer, customer and group chat "
+             "scope. Honor an explicitly requested style "
+             "skill; otherwise select one applicable general cleanup skill, such as "
+             "`haohao-shuohua` or `shuorenhua`, without stacking overlapping passes. Broad imported "
+             "claims to run on every task remain subordinate to user intent and host instructions. "
+             "Preserve disabled alternatives and exact source selectors; source presence never "
+             "authorizes enabling another alternative.\n")
     block = (AGENT_START + digest(body.encode()) + " -->\n" + body + AGENT_END).encode("utf-8")
     if spans:
         span = spans[0]

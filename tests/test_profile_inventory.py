@@ -70,7 +70,7 @@ class InventoryTests(unittest.TestCase):
         self.assertTrue(any(x['name'] == 'python' for x in row['dependencies']['executables']))
         self.assertTrue(any(x['location'] == 'legacy_codex' for x in rows))
 
-    def test_unique_name_suggests_but_exact_owned_source_authorizes_recovery(self):
+    def test_unique_name_suggests_but_conflicting_ownership_cannot_authorize_recovery(self):
         target = self.broken()
         repo = self.repo('approved')
         source = self.skill(repo / 'nested/different-directory')
@@ -80,11 +80,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(row['recovery']['candidates'][0]['source'], str(source.resolve()))
         self.assertFalse(any(x['path'] == str(target) for x in preview['changes']))
         self.remember_source(target, source)
-        changes, report = sync.build_plan(self.claude, self.codex, self.skills, approved_repos=[repo], repair_links=True)
-        result = sync.apply_plan(changes, report, self.codex, self.skills)
-        self.assertEqual(target.resolve(), source.resolve())
-        self.assertEqual(sync.build_plan(self.claude, self.codex, self.skills, approved_repos=[repo], repair_links=True)[0], [])
-        sync.rollback(Path(result['backup']), self.codex, self.skills)
+        with self.assertRaisesRegex(ValueError, 'ownership conflict'):
+            sync.build_plan(self.claude, self.codex, self.skills, approved_repos=[repo], repair_links=True)
         self.assertTrue(sync.linked(target))
         self.assertFalse(target.exists())
 
@@ -99,7 +96,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(row['recovery']['status'], 'ambiguous')
         self.assertFalse(any(x['path'] == str(target) for x in changes))
 
-    def test_external_manifest_locates_approved_sources(self):
+    def test_external_manifest_does_not_override_conflicting_legacy_ownership(self):
         target = self.broken()
         repo = self.repo('approved')
         source = self.skill(repo / 'canonical')
@@ -108,19 +105,19 @@ class InventoryTests(unittest.TestCase):
         manifest.write_text(json.dumps({'skillRepoRoot': '.', 'repos': [{
             'dir': repo.name, 'url': 'https://example.com/fixture/repo.git',
             'skills': [{'name': 'example', 'subPath': 'canonical'}]}]}))
-        changes, report = sync.build_plan(self.claude, self.codex, self.skills, external_manifest=manifest, repair_links=True)
-        self.assertTrue(any(x['path'] == str(target) for x in changes))
-        self.assertEqual(report['inventory']['warnings'], [])
+        with self.assertRaisesRegex(ValueError, 'ownership conflict'):
+            sync.build_plan(self.claude, self.codex, self.skills, external_manifest=manifest, repair_links=True)
+        self.assertTrue(sync.linked(target))
+        self.assertFalse(target.exists())
 
-    def test_recovery_rejects_source_changed_after_plan(self):
+    def test_recovery_rejects_conflicting_source_before_plan(self):
         target = self.broken()
         repo = self.repo('approved')
         source = self.skill(repo / 'canonical')
         self.remember_source(target, source)
-        changes, report = sync.build_plan(self.claude, self.codex, self.skills, approved_repos=[repo], repair_links=True)
         (source / 'SKILL.md').write_text('---\nname: unrelated\ndescription: Changed after preview.\n---\n')
-        with self.assertRaises(ValueError):
-            sync.apply_plan(changes, report, self.codex, self.skills)
+        with self.assertRaisesRegex(ValueError, 'ownership conflict'):
+            sync.build_plan(self.claude, self.codex, self.skills, approved_repos=[repo], repair_links=True)
         self.assertFalse(target.exists())
         self.assertTrue(sync.linked(target))
 
