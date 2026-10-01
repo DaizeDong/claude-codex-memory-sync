@@ -1,5 +1,6 @@
 .claude/
 .codex/
+.agents/
 .env
 .env.*
 !.env.example
@@ -15,3 +16,7 @@
 Thumbs.db
 test-results/
 __pycache__/
+
+# Session working notes from the planning skill. They describe the local operating environment
+# they were written in, which does not belong in a public repository.
+docs/superpowers/
