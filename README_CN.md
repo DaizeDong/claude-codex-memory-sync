@@ -152,14 +152,17 @@ Codex memory consolidation
 
 - Windows；
 - Windows PowerShell 5.1（`powershell.exe`），这是已支持并经过测试的运行时；
+- Python 3.11 或更新版本，并已安装共享核心及其依赖；
 - Claude memory 目录存在并包含 `MEMORY.md`；
 - Codex memories 已启用，且目标 memories 根目录存在并包含 `extensions\ad_hoc\instructions.md`。
 
-单项目 PowerShell 入口不需要额外依赖；受管配置同步需要安装上文列出的 Python 依赖。Git 用于克隆，并在可用时用于发现 Git 根目录：
+两个入口都使用共享的 Python 核心，不需要额外 PowerShell 模块。克隆仓库后，初始化子模块并安装 Python 依赖：
 
 ```powershell
 git clone https://github.com/DaizeDong/claude-codex-memory-sync.git
 Set-Location .\claude-codex-memory-sync
+git submodule update --init --recursive
+python -m pip install -r requirements-dev.txt
 ```
 
 ## 快速开始
