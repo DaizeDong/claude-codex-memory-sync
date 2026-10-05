@@ -85,4 +85,7 @@ def test_explicit_caller_budget_is_shared_and_default_stays_thirty(tmp_path, sec
     result = sources.freeze(value)
     expected = 30 if seconds is None else seconds
     assert result['status'] == 'frozen'
-    assert len(observed) == 2 and expected-5 < observed[1] < observed[0] <= expected
+    assert len(observed) == 2 and expected-5 < observed[1] < observed[0]
+    # Adding and subtracting monotonic floats can round just above the budget.
+    # Allow one microsecond at the upper bound; the shared deadline must decrease.
+    assert observed[0] <= expected + 1e-6

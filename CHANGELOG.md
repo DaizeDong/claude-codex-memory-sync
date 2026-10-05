@@ -14,6 +14,8 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Exercise real Windows aliases through plan, apply and replan, including preserved
   native hooks and excluded outside-plugin agents. Legacy link fixtures use the
   resolved source spelling written by the original producer.
+- Budget regression assertions tolerate floating-point roundoff while retaining
+  the check that consecutive observations consume the same deadline.
 
 Python package versions are independent of the original PowerShell converter's
 v1.0.0 release below.
