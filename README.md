@@ -167,14 +167,17 @@ Requirements:
 
 - Windows;
 - Windows PowerShell 5.1 (`powershell.exe`), the supported and tested runtime;
+- Python 3.11 or newer with the shared core and its dependencies installed;
 - a Claude memory directory containing `MEMORY.md`;
 - Codex memories enabled, with an existing memories root and `extensions\ad_hoc\instructions.md` beneath it.
 
-Clone the repository. The memory-only PowerShell entry needs no additional packages; the managed profile sync uses the Python dependencies documented above. Git is used for cloning and, when available, Git-root discovery:
+Both entry points use the shared Python core. No additional PowerShell modules are needed. Clone the repository, initialize its submodules, and install the Python dependencies:
 
 ```powershell
 git clone https://github.com/DaizeDong/claude-codex-memory-sync.git
 Set-Location .\claude-codex-memory-sync
+git submodule update --init --recursive
+python -m pip install -r requirements-dev.txt
 ```
 
 ## Quick start
