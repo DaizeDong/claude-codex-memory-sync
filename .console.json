@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "component": "claude-codex-memory-sync",
+  "read": "task-console-status --configured",
+  "tasks": [
+    {
+      "id": "syncclaudetocodex",
+      "kind": "oneshot",
+      "entrypoint": "task:syncclaudetocodex",
+      "timeout_seconds": 300,
+      "concurrency_key": "claude-codex-memory-sync/syncclaudetocodex",
+      "checks": [
+        {
+          "id": "legacy-1",
+          "required": true
+        }
+      ]
+    }
+  ]
+}
