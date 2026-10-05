@@ -1,32 +1,26 @@
-# Claude Code → Codex Profile & Memory Sync
+# Claude → Codex Profile Bridge
 
-Bring local Claude skills, instructions, compatible MCP configuration, and project memories into Codex. Preview changes first, apply with a backup, and rerun incrementally.
+Bridge supported Claude Code skills, instructions, MCP settings, reviewed hook adapters, and project memory into Codex on the same machine. Preview and back up managed changes before applying them. Ownership checks protect later user edits; native memory delivery requires an explicit authorized scope.
 
 [![Test](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
-[![Roadmap](https://img.shields.io/badge/Roadmap-v1.0.0-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
 > This is an independent community project. It is not affiliated with or endorsed by Anthropic or OpenAI.
 
-## ⭐ Read this first, the design philosophy
+## Managed profile sync
 
-**Stage verifiable updates; never pretend the two agents share a brain.**
+Use `sync-all.cmd` for supported profile components. It requires **Python 3.11 or newer** on `PATH`; Windows directory links use junctions. The original Windows PowerShell 5.1 memory-only entry remains available and is documented below.
 
-This tool is intentionally small. Both entry points follow the same three principles:
+Install the source checkout and its dependencies from the pinned public revisions:
 
-1. **Fill the seam, do not add another agent surface.** Claude Code already stores skills, instructions and project memory, and Codex already owns its own configuration and its memory consolidation. This tool converts one representation into the other and stops there. It adds no agent terminal, daemon, MCP server, database, vector store, or model call of its own.
-2. **Write through the contracts the local installation exposes, do not impersonate Codex internals.** Managed blocks are hash-tracked and reversible, memory arrives as self-contained notes under the detected ingress contract, and native settings this bridge does not own are preserved. A successful run means "safely staged", not "already consolidated or guaranteed to be recalled".
-3. **Quality matters more than volume, and preview comes before writing.** Dry run is the default, selection is conservative, every input is bounded, likely credentials fail the whole batch closed, and unchanged content is never restaged. Copying every log and stale decision would make the pool larger while potentially making recall worse.
-
-The design target is the smallest auditable bridge between two existing configuration and memory systems, not a universal shared-memory platform.
-
-## Full profile sync
-
-Use `sync-all.cmd` for the complete local profile. It requires **Python 3.11 or newer** on `PATH`; Windows directory links use junctions. The original Windows PowerShell 5.1 memory-only entry remains available and is documented below.
+```powershell
+git submodule update --init --recursive
+python -m pip install -r requirements-dev.txt
+```
 
 ```powershell
 # Preview only; this is also the default when no mode is specified.
@@ -48,22 +42,24 @@ The profile sync covers:
 | Global `CLAUDE.md` and user rules | A hash-tracked managed block in `~/.codex/AGENTS.md`, preserving existing text and reporting edits to the managed block. Source rule path filters retain their scope. |
 | Project `CLAUDE.md` documents | A compatible project-document fallback setting, preserving native Codex project instructions. |
 | Compatible user and enabled-plugin MCP definitions | Incremental managed blocks in `config.toml`; existing native MCP names win conflicts. Unresolved environment variables and unsupported transports/settings are reported. |
-| All nonempty project memory directories | Readable Markdown under `~/.codex/imports/claude-memory/`, a project index, and at most one small `ad_hoc` note per changed source snapshot. |
-| Claude hooks | An inventory requiring protocol review. Only the reviewed local Stop scripts `pw-auth.py absorb` and `pw_export_guard.py` have dedicated JSON-output adapters; existing Codex hooks are preserved and other hooks are reported as unsupported. |
+| All nonempty project memory directories | Readable Markdown under `~/.codex/imports/claude-memory/`, a source-only project index, and explicitly authorized `ad_hoc` delivery through a durable outbox. |
+| Claude hooks | Reviewed adapters for SessionStart, PostToolUse and Stop, including browser isolation checks, document-budget feedback and login-state export/absorb. Existing Codex hooks are preserved; unsupported source commands are reported explicitly. Native trust and a new session may be required. |
 
 This is a **same-machine setup**: linked skills and adapted local scripts depend on their original installation. It is not a self-contained copy for a new computer. The tool keeps Codex's existing model, provider, authentication, and permission settings. Claude login/session state is not imported.
 
-Default source is `CLAUDE_CONFIG_DIR`, or the `.claude` directory in the user home; default destination is `CODEX_HOME`, or `~/.codex`. Override paths with `--claude-home`, `--codex-home`, and `--skills-home` when needed. The active `.claude/.claude.json` is preferred over the legacy `~/.claude.json` when both exist.
+Default source is `CLAUDE_CONFIG_DIR`, or the `.claude` directory under the user home; default destination is `CODEX_HOME`, or `~/.codex`. Override paths with `--claude-home`, `--codex-home`, and `--skills-home` when needed. The active `.claude/.claude.json` is preferred over the legacy `~/.claude.json` when both exist. External repository metadata requires an explicit catalog manifest or `CLAUDE_CONFIG_REPO` pointing to the directory containing `external-skill-repos.json`.
 
 ### Memory archive behavior
 
-The full sync reads non-archive `*.md` files recursively, skips empty project directories, and maps project scope only from exact encoded paths present in the active Claude configuration. Unknown project keys remain visible without guessing a filesystem path. It accepts UTF-8/BOM text and BOM-marked UTF-16, emits UTF-8, limits each source file to 1 MiB, rejects symlinks/junctions, and skips suspected credentials. Reports list skipped filenames and reasons without source bodies or credential values.
+The full sync reads non-archive `*.md` files recursively, skips empty project directories, and maps project scope from exact encoded paths in the active Claude configuration or explicit reviewed path evidence. Active mappings and conflicts take precedence; unknown project keys remain visible without guessing a filesystem path. It accepts UTF-8/BOM text and BOM-marked UTF-16, emits UTF-8, limits each source file to 1 MiB, rejects symlinks/junctions, and skips suspected credentials. Reports list skipped filenames and reasons without source bodies or credential values.
 
 Control characters become visible escapes such as `\u0008` **in the archive only**, with codepoints and locations recorded in the report; source files stay unchanged. Explicit API-key documentation placeholders are accepted, while actual credential patterns remain blocked.
 
-Every run recomputes content hashes. The index has no run timestamp, so an unchanged snapshot produces no new note. A changed snapshot produces at most one note of 8 KiB or less, pointing to the archive index. If the local `ad_hoc` contract is unavailable, the archive is still usable and the report marks note staging unsupported. Native Codex consolidation is separate and asynchronous; successful staging does not guarantee that native memory has been updated or that a fact will be recalled.
+Every run recomputes content hashes. New installations and default invocations maintain the archive only. An `instructions.md` file establishes ingress availability, not user authorization. Explicit `--request-id` and `--scope` select an ingress request; `--periodic` persists an approved recurring scope. Existing periodic grants can be migrated through the documented authorization API without changing scheduler tasks.
 
-The current index identifies the active source snapshot. Removed or skipped source files may leave older archive copies on disk, but those copies are no longer listed as current. No native `MEMORY.md`, memory summary, rollout evidence, or SQLite file is rewritten.
+Delivery uses a durable outbox and stable increment-based note names. Each increment includes its predecessor, so repeated A to B transitions remain distinct. An interrupted attempt whose delivery cannot be proven is `delivery_unknown` and is never blindly replayed. Notes are created through OS no-replace publication; existing notes and user edits are preserved. Native consolidation is asynchronous. See [memory authorization, persistence, and controller integration](docs/MEMORY_OUTBOX.md) for exact formats and recovery limits.
+
+The current index identifies the active source snapshot. The archive planner retires unchanged owned copies when their source disappears or is excluded, retaining evidence in the existing private profile backup outside the searchable import. Unowned legacy copies require an exact-hash review decision; edited destinations are preserved and reported. Archive ownership is recorded by the existing memory outbox. See [archive hygiene and transaction hooks](docs/MEMORY_ARCHIVE_HYGIENE.md) for integration, reviewed scopes, and rollback behavior. No native `MEMORY.md`, memory summary, rollout evidence, or SQLite file is rewritten.
 
 ### Backups and rollback
 
@@ -73,7 +69,7 @@ Each applying run with changes stores its manifest, original file contents, and 
 .\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json
 ```
 
-Use the backup path reported by the applying run. Rollback restores files and links only when their current state still matches what that run wrote; later user edits are preserved. Appended memory notes are retained because removing a file cannot reliably retract memory already processed by Codex. Live profile data and backups must remain outside this repository.
+Use the backup path reported by the applying run. Rollback restores files and links only when their current state still matches what that run wrote; later user edits are preserved. Outbox history, prepared evidence, authorization records, and appended memory notes are retained because removing a file cannot reliably retract memory already processed by Codex. Live profile data and backups must remain outside this repository.
 
 ### Scheduled runs and health
 
@@ -88,6 +84,18 @@ The JSON report includes `inventory`: entry-point paths, ownership, local reposi
 
 Ambiguous candidates remain untouched. `--external-skill-manifest` can point to an existing repository manifest. Native role files and their config entries have independent ownership hashes; read-only reviewer guidance is advisory and native permissions remain inherited.
 
+For linked skills, resolve relative resources from the canonical source entrypoint. Use both `resource_context.canonical_entrypoint` and `resource_context.source_root` from the inventory. Forwarding wrappers point to their verified upstream file; overlay bundles point to their owned local payload. Changed wrapper, descriptor, or payload entrypoint content makes the context unavailable. A resource in a sibling directory may require an explicitly approved package root. Run this command in the Python environment where `profile-sync` is installed:
+
+```powershell
+python -m profile_bridge.resources --entrypoint C:\skills\example\SKILL.md --source-root C:\src\example-package --reference ../../shared-references/rules.md
+```
+
+The command prints the existing canonical file path as JSON and exits `0`. Missing files, absolute or remote references, and paths escaping the selected root through `..` or symlinks return a reason and exit `2`. It does not read workflow content, execute resources, or change the profile. Keep the root tied to the known package; do not broaden it to make a failed reference pass.
+
+The managed instruction block also explains host capability checks and writing-skill scope. Claude-specific tools and Cowork actions require actual host support; installation alone establishes no runtime capability. Named-persona writing requires explicit persona intent. Raw skills must have valid YAML frontmatter with unique mapping keys and nonempty string names and descriptions before installation is planned. Adapter descriptions use parsed source scalars, preserving comparison conditions and inline trigger text while example sections remain in the source workflow. Inventory preserves catalog source hashes and plugin versions, and reports unavailable git provenance without inventing an upstream revision.
+
+Runtime selection verifies every declared generated member of the selected alternative, including its installed instructions, descriptor and payload, against hashes stored in the selection snapshot. Missing or changed members block that alternative and preserve the files. An older selection snapshot without member hashes must be regenerated through the normal profile plan before it can select an alternative.
+
 `run_profile_sync.py` is the deterministic entry point for an existing scheduler:
 
 ```powershell
@@ -96,24 +104,39 @@ python .\run_profile_sync.py --apply --write-status --probe-mcp
 
 It applies the managed profile, recomputes the plan, and evaluates conflicts and missing dependencies. Exit `0` means the checked profile is healthy, `2` means unresolved findings or remaining changes, and `1` means execution failed. The JSON distinguishes deliberate compatibility exclusions from faults. Local HTTP MCP servers are initialized without invoking tools; remote servers are marked `not_checked`, and stdio commands are checked for presence only.
 
-`--write-status` writes `claude-sync/last-run.json` under the selected Codex home. It removes the previous `last-success.json` before starting and publishes a new success marker only after verification passes. A scheduler should treat the exit code as authoritative and monitor that success artifact. The runner does not send messages or create scheduled tasks; connect it to the existing scheduler, task monitor and backup registration.
+`--write-status` writes `claude-sync/last-run.json` under the selected Codex home. It preserves the previous `last-success.json` during a run and refreshes it only after verification passes. A retained marker describes the previous successful run; the scheduler must also check the current exit code and run identity. The runner does not send messages or create scheduled tasks; connect it to the existing scheduler, task monitor and backup registration.
 
 The profile transform and health checks do not call a model. Automation that adds agent work should invoke the operator's `llmcall` interface with `mode="agent"`, inheriting its provider policy rather than embedding a second routing chain.
 
-### Full profile tests
+### Profile bridge tests
 
 All tests use synthetic data in temporary directories:
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
+python -m pytest tests -q
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 ```
 
 The first command requires Python 3.11+. The second verifies the existing Windows PowerShell 5.1 memory-only bridge.
 
-## Memory-only bridge
+Workflow-context tests use generated synthetic clients and make no model calls.
+Executing a typed workflow requires a compatible installed `llmcall` client;
+missing contract types fail before workflow state is written. Passing the source
+tests does not establish that the current local client supports those contracts.
 
-The remaining sections describe **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**, the original single-project entry. It applies the three principles above to one project's memory directory, and its selection, output, and all-or-nothing credential rules differ from the full profile archive described above.
+## Memory-only bridge: design philosophy
+
+The remaining sections describe **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**, the original single-project entry. Its selection, output, and all-or-nothing credential rules differ from the full profile archive described above.
+
+**Stage verifiable memory updates; never pretend the two agents share a brain.**
+
+This tool is intentionally small. Its design follows three principles:
+
+1. **Fill the seam, do not add another agent surface.** Claude Code already stores project memory, and Codex already owns its memory consolidation. This tool only converts one representation into the format accepted by the detected local ingress contract. It adds no agent terminal, daemon, MCP server, database, vector store, or model call.
+2. **Stage through the detected local contract, do not impersonate Codex internals.** The script appends self-contained notes under `extensions\ad_hoc\notes\`. It never rewrites Codex memory summaries, rollout evidence, or SQLite state. A successful sync means “safely staged,” not “already consolidated or guaranteed to be recalled.”
+3. **Memory quality matters more than memory volume.** Dry-run first, select conservatively, fail closed on likely credentials, bound every input, and deduplicate incrementally. Copying every log and stale decision would make the pool larger while potentially making recall worse.
+
+The design target is the smallest auditable bridge between two existing memory systems, not a universal shared-memory platform.
 
 ## What it is (and isn't)
 
@@ -147,7 +170,7 @@ Requirements:
 - a Claude memory directory containing `MEMORY.md`;
 - Codex memories enabled, with an existing memories root and `extensions\ad_hoc\instructions.md` beneath it.
 
-Clone the repository; the tool needs no additional PowerShell modules or packages. Git is used for cloning and, when available, Git-root discovery:
+Clone the repository. The memory-only PowerShell entry needs no additional packages; the managed profile sync uses the Python dependencies documented above. Git is used for cloning and, when available, Git-root discovery:
 
 ```powershell
 git clone https://github.com/DaizeDong/claude-codex-memory-sync.git
@@ -346,10 +369,7 @@ Then preview the real local configuration without writing:
 
 English (`README.md`, authoritative) · 中文 ([`README_CN.md`](README_CN.md))
 
-## Roadmap, Contributing and License
+## Roadmap, contributing and license
 
-See [ROADMAP.md](ROADMAP.md) · [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE) (MIT).
-
-Issues and pull requests are welcome; the repository carries no `CONTRIBUTING.md`, so the gates a change has to pass are the ones in `.github/workflows/`.
-
-The deviations from the house repository spec, and the reason for each, are recorded in [docs/2026-09-22-spec-adaptation.md](docs/2026-09-22-spec-adaptation.md).
+See [ROADMAP.md](ROADMAP.md), [CHANGELOG.md](CHANGELOG.md), and [LICENSE](LICENSE) (MIT).
+The repository checks are defined in `.github/workflows/`; [the spec adaptation notes](docs/2026-09-22-spec-adaptation.md) explain repository-specific exceptions.
