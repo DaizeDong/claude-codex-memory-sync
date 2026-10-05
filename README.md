@@ -22,6 +22,10 @@ git submodule update --init --recursive
 python -m pip install -r requirements-dev.txt
 ```
 
+Windows 8.3 directory aliases are supported when the filesystem provides them.
+Hook plans preserve the caller's destination spelling; generated commands use the
+resolved path. Destination junctions and symlinks remain rejected before writes.
+
 ```powershell
 # Preview only; this is also the default when no mode is specified.
 .\sync-all.cmd --dry-run

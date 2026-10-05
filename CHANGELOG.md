@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## Python package [0.2.1] - 2026-10-05
+
+### Fixed
+
+- Windows 8.3 home aliases now retain consistent hook destination keys across
+  planning and applying. Generated commands use resolved paths so switching between
+  the short and long spelling does not rewrite hooks.
+- Pin skill-smith 0.1.6 for custom plugin paths and native working-directory checks.
+  Plugin-local boundaries and destination junction rejection remain enforced.
+- Exercise real Windows aliases through plan, apply and replan, including preserved
+  native hooks and excluded outside-plugin agents. Legacy link fixtures use the
+  resolved source spelling written by the original producer.
+
+Python package versions are independent of the original PowerShell converter's
+v1.0.0 release below.
+
 ## [Unreleased]
 
 ### Added

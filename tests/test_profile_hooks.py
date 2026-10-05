@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from profile_hooks import _windows_split, plan_hooks
+from tools.make_fixtures import make_windows_short_path
 
 
 class HookPlanTests(unittest.TestCase):
@@ -70,6 +71,21 @@ class HookPlanTests(unittest.TestCase):
         self.assertFalse((self.codex / "hooks.json").exists())
         self.assertTrue(report["requires_hooks_feature"])
         self.assertEqual(report["registered"], 1)
+
+    def test_short_home_paths_publish_to_the_same_directory(self):
+        alias = make_windows_short_path(self.base)
+        if alias is None:
+            self.skipTest('Native Windows short paths are unavailable')
+        self.configure([self.source()])
+        outputs, report = plan_hooks(alias / 'source home', alias / 'target home')
+        target = alias / 'target home/hooks.json'
+        self.assertEqual(report['registered'], 1)
+        self.assertIn(target, outputs)
+        self.assertFalse(target.exists())
+        self.apply(outputs)
+        self.assertEqual((alias / 'target home/hooks.json').read_bytes(), outputs[target])
+        again, _ = plan_hooks(self.claude.resolve(), self.codex.resolve())
+        self.assertEqual(again, {})
 
     def test_success_json_suppresses_original_stdout(self):
         self.configure([self.source()])

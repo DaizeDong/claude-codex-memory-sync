@@ -1,4 +1,4 @@
 # Install from the repository root after recursive submodule checkout.
 ./guards
-skill-smith @ git+https://github.com/DaizeDong/skill-smith.git@e91304eb1d2fba7812f68b6972eaa2ce04b48446
+skill-smith @ git+https://github.com/DaizeDong/skill-smith.git@fff40a2d834285d97fd2c8c3f08109412b63355c
 .[test]

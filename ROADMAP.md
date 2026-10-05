@@ -1,8 +1,8 @@
 # Roadmap
 
-Current: **v1.0.0**
+Current: Python profile package **0.2.1**; original PowerShell converter **v1.0.0**.
 
-## v1.0.0 (current)
+## Current capabilities
 
 Feature names only. Why each one behaves the way it does lives in `README.md`, and what
 changed lives in `CHANGELOG.md`.
@@ -26,6 +26,8 @@ changed lives in `CHANGELOG.md`.
   under a destination-derived mutex.
 - Black-box tests for both entry points, all of them building their trees from synthetic
   data in temporary directories.
+- Native Windows 8.3 aliases for hook and custom plugin paths, with idempotent
+  planning and unchanged plugin-local and destination-link protections.
 
 ## Planned
 

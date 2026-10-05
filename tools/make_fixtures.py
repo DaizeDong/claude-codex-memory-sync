@@ -6,6 +6,62 @@ import profile_memory as memory
 from profile_bridge import memory_outbox as outbox
 
 
+def make_windows_short_path(path):
+    """Get a distinct native 8.3 alias for an existing synthetic test directory."""
+    import ctypes
+    import os
+
+    if os.name != 'nt':
+        return None
+    function = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+    function.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+    function.restype = ctypes.c_uint
+    size = function(str(path), None, 0)
+    if not size:
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_unicode_buffer(size)
+    length = function(str(path), buffer, size)
+    if not length or length >= size:
+        raise OSError('Cannot read the synthetic directory short path')
+    alias = Path(buffer.value)
+    if alias == Path(path).resolve():
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            raise RuntimeError('Windows CI must expose a native short-path fixture')
+        return None
+    return alias
+
+
+def make_profile_hook_source(claude_home, python):
+    """Generate an inert reviewed-hook source for profile lifecycle tests."""
+    import json
+    import subprocess
+
+    script = Path(claude_home) / 'scripts' / 'pw-auth.py'
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_bytes(b"print('synthetic hook')\n")
+    settings = {'hooks': {'Stop': [{'hooks': [{
+        'type': 'command',
+        'command': subprocess.list2cmdline([str(python), str(script), 'absorb']),
+        'timeout': 2,
+    }]}]}}
+    (Path(claude_home) / 'settings.json').write_text(json.dumps(settings), encoding='utf-8')
+
+
+def make_profile_agent_custom_paths(plugin_root):
+    """Generate a valid custom agent and an existing traversal target."""
+    import json
+
+    root = Path(plugin_root)
+    custom, outside = root / 'custom/inspector.md', root.parent / 'outside.md'
+    custom.parent.mkdir(parents=True, exist_ok=True)
+    custom.write_bytes(b'---\nname: inspector\ndescription: Inspect synthetic files.\n---\nReport fixture findings.\n')
+    outside.write_bytes(b'---\nname: outside\ndescription: An excluded synthetic role.\n---\nDo not import this fixture.\n')
+    manifest = root / '.claude-plugin/plugin.json'
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({'name': 'fixture', 'agents': ['./custom/inspector.md', '../outside.md']}), encoding='utf-8')
+    return custom, outside
+
+
 def make_workflow_client_contracts():
     """Generate a synthetic typed client; no private runtime package is imported."""
     from contextlib import contextmanager

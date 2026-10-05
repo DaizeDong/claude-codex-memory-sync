@@ -13,6 +13,7 @@ from unittest.mock import patch
 import uuid
 
 from profile_agents import plan_agents
+from tools.make_fixtures import make_profile_agent_custom_paths, make_windows_short_path
 
 
 class AgentPlanTests(unittest.TestCase):
@@ -175,7 +176,8 @@ class AgentPlanTests(unittest.TestCase):
         self.source(root=root, body="Read [rules](../references/rules.md).\nUse actual available tools.\n")
         result = self.plan(plugins=[])
         self.assertEqual(result[2]["agents"][0]["category"], "user")
-        self.assertIn((root / "references/rules.md").as_posix(), self.role(result)[2]["developer_instructions"])
+        resource = (root / "references/rules.md").resolve().as_posix()
+        self.assertIn(f"Read [rules](<{resource}>).", self.role(result)[2]["developer_instructions"])
 
     def test_plugin_root_expansion_does_not_expand_environment_secrets(self):
         self.source(body="Read ${CLAUDE_PLUGIN_ROOT}/rules.md.\nKeep ${SYNTHETIC_SECRET} symbolic.\n")
@@ -292,16 +294,38 @@ class AgentPlanTests(unittest.TestCase):
         self.assertNotIn("synthetic-private-value", json.dumps(result[2]))
 
     def test_custom_plugin_manifest_paths_and_traversal(self):
-        source = self.source()
-        custom = self.plugin / "custom/inspector.md"
-        custom.parent.mkdir()
-        source.rename(custom)
-        manifest = self.plugin / ".claude-plugin/plugin.json"
-        manifest.parent.mkdir()
-        manifest.write_text(json.dumps({"agents": ["./custom/inspector.md", "../outside.md"]}))
+        make_profile_agent_custom_paths(self.plugin)
         result = self.plan()
         self.assertEqual(result[2]["registered"], 1)
         self.assertTrue(any(x["reason"] == "agent_reference_outside_plugin" for x in result[2]["warnings"]))
+
+    @unittest.skipUnless(os.name == "nt", "native Windows 8.3 path regression")
+    def test_native_short_plugin_path_imports_custom_agent_and_rejects_traversal(self):
+        custom, outside = make_profile_agent_custom_paths(self.plugin)
+        alias = make_windows_short_path(self.plugin)
+        if alias is None:
+            self.skipTest("filesystem does not expose a distinct native 8.3 alias")
+        self.assertEqual(alias.resolve(), self.plugin.resolve())
+        self.assertTrue(outside.is_file())
+        key = self.plugins[0][0]
+        long_result = self.plan(plugins=[(key, self.plugin.resolve())])
+        self.assertEqual(long_result[2]["registered"], 1)
+
+        plugins = [(key, alias)]
+        result = self.plan(plugins=plugins)
+        self.assertEqual(result[2]["registered"], 1, result[2]["warnings"])
+        self.assertEqual(self.role(result)[0], self.role(long_result)[0])
+        self.assertEqual(result[2]["agents"][0]["source"], str(alias / custom.relative_to(self.plugin)))
+        reasons = [row["reason"] for row in result[2]["warnings"]]
+        self.assertEqual(reasons.count("agent_reference_outside_plugin"), 1)
+        self.assertNotIn("Do not import this fixture.", self.role(result)[2]["developer_instructions"])
+
+        self.apply(result)
+        files, config, report = self.plan(plugins=plugins)
+        self.assertEqual(files, {})
+        self.assertEqual(config, self.config)
+        self.assertEqual(report["registered"], 1)
+        self.assertFalse(report["changed"])
 
     def test_yaml_folded_literal_and_quoted_descriptions(self):
         descriptions = ['>-\n  Review synthetic\n  examples.', '|\n  Review examples.\n  Then report.', '"Review examples with \\"quotes\\"."', "'Review examples with ''quotes''.'"]
