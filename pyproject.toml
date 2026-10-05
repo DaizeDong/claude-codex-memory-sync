@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-codex-memory-sync"
-version = "0.2.0"
+version = "0.2.1"
 description = "Ownership-aware Claude to Codex profile adapters"
 requires-python = ">=3.11"
-dependencies = ["fleet-guards==0.2.0", "skill-smith==0.1.4", "PyYAML>=6.0,<7"]
+dependencies = ["fleet-guards==0.2.0", "skill-smith==0.1.6", "PyYAML>=6.0,<7"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]

@@ -253,7 +253,7 @@ def _render_bridge(jobs: list[dict]) -> bytes:
 
 
 def _handler(bridge: Path, jobs: list[dict], event="Stop") -> dict:
-    argv = [str(Path(sys.executable).resolve()), str(bridge), event]
+    argv = [str(Path(sys.executable).resolve()), str(bridge.resolve()), event]
     # This launcher works whether the enclosing Windows hook shell is cmd or
     # PowerShell. Neither shell receives the original Claude command string.
     powershell = "& " + " ".join("'" + value.replace("'", "''") + "'" for value in argv)
@@ -272,7 +272,10 @@ def _handler(bridge: Path, jobs: list[dict], event="Stop") -> dict:
 
 def plan_hooks(claude_home: Path, codex_home: Path, *, plugin_roots=()) -> tuple[dict[Path, bytes | None], dict]:
     """Return artifacts (`None` retires a file) without executing hooks."""
-    claude_home, codex_home = Path(claude_home).resolve(), Path(codex_home).resolve()
+    claude_home = Path(claude_home).resolve()
+    # Keep destination keys in the caller's spelling for baseline and apply checks.
+    # Runtime commands use the physical path, so 8.3 aliases do not rewrite hooks.
+    codex_home = Path(codex_home).absolute()
     report = {"hooks": [], "warnings": [], "changed": False, "registered": 0, "requires_hooks_feature": False}
     report["protocol_boundaries"] = [
         "hooks.json timeout is reported as timeoutSec by app-server; timeoutSec in the input file is ignored in 0.154.0",

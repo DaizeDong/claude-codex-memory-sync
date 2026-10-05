@@ -5,15 +5,34 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import tomllib
 import unittest
 from unittest.mock import patch
 
 import profile_sync as sync
+from tools.make_fixtures import make_profile_hook_source, make_windows_short_path
 
 
 class ProfileSyncTests(unittest.TestCase):
+    def test_short_home_alias_hook_plan_apply_and_replan(self):
+        alias = make_windows_short_path(self.base)
+        if alias is None:
+            self.skipTest('Native Windows short paths are unavailable')
+        make_profile_hook_source(self.claude, sys.executable)
+        native = {'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'synthetic-native-hook'}]}]}}
+        self.write_json(self.codex / 'hooks.json', native)
+        before = (self.codex / 'hooks.json').read_bytes()
+        claude, codex, skills = alias / 'claude', alias / 'codex', alias / 'agents/skills'
+        changes, report = sync.build_plan(claude, codex, skills)
+        self.assertEqual((self.codex / 'hooks.json').read_bytes(), before)
+        self.assertEqual(report['hooks']['registered'], 1)
+        sync.apply_plan(changes, report, codex, skills)
+        self.assertEqual(json.loads((self.codex / 'hooks.json').read_bytes())['hooks']['Stop'][0], native['hooks']['Stop'][0])
+        again, _ = sync.build_plan(claude, codex, skills)
+        self.assertEqual(again, [])
+
     def test_destination_edit_during_inventory_rejects_stale_plan(self):
         original = self.existing_config()
         real_inventory = sync.inventory_sources
@@ -412,6 +431,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertEqual((self.codex / "config.toml").read_bytes(), original)
 
     def test_output_home_junction_is_rejected_without_writes(self):
+        make_profile_hook_source(self.claude, sys.executable)
         outside = self.base / "outside"
         outside.mkdir()
         self.junction(self.codex, outside)
@@ -518,7 +538,8 @@ class ProfileSyncTests(unittest.TestCase):
     def test_legacy_link_manifest_supports_retirement(self):
         plugin = self.plugin_fixture()
         target = self.skills / "plugin-example"
-        self.junction(target, plugin / "skills/plugin-example")
+        # The legacy producer used the same resolved source in the link and map.
+        self.junction(target, (plugin / "skills/plugin-example").resolve())
         self.write_json(self.codex / "claude-sync/managed-skills.json", {str(target): str(target.resolve())})
         self.write_json(self.claude / "settings.json", {"enabledPlugins": {"fixture@local": False}})
         changes, _ = self.plan()
@@ -527,7 +548,7 @@ class ProfileSyncTests(unittest.TestCase):
     def test_owned_link_in_legacy_codex_root_can_retire(self):
         plugin = self.plugin_fixture()
         target = self.codex / "skills/plugin-example"
-        self.junction(target, plugin / "skills/plugin-example")
+        self.junction(target, (plugin / "skills/plugin-example").resolve())
         self.write_json(self.codex / "claude-sync/managed-skills.json", {str(target): str(target.resolve())})
         self.write_json(self.claude / "settings.json", {"enabledPlugins": {"fixture@local": False}})
         changes, report = self.plan()

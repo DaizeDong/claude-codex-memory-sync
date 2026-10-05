@@ -22,6 +22,9 @@ git submodule update --init --recursive
 python -m pip install -r requirements-dev.txt
 ```
 
+文件系统提供 Windows 8.3 短路径时，可以用它指定目录。Hook 计划保留调用方传入的目标路径写法，
+生成的命令使用解析后的路径；目标目录中的 junction 和符号链接仍会在写入前被拒绝。
+
 ```powershell
 # 零写入预览；未指定模式时也是这个行为。
 .\sync-all.cmd --dry-run
