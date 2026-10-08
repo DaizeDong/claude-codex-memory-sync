@@ -6,38 +6,45 @@ import sys
 
 import pytest
 from skill_smith import overlays, source_workflows
-from profile_bridge.workflows import DurableWorkflow
+from profile_bridge.workflows import DurableWorkflow, _hash
 from catalog_fixture_factory import write as text_file
 from tools.make_fixtures import make_workflow_client_contracts
 
 
 contracts = make_workflow_client_contracts()
 Result, Attempt = contracts.Result, contracts.Attempt
-ModelSelection, ExecutionRequirements = contracts.ModelSelection, contracts.ExecutionRequirements
 process = contracts.process
+LADDER = ('codexg', 'codex', 'cc', 'claude')
 
 
 class Fake:
+    """The llmcall 0.3.0 surface: call options only, no per-call cwd/env/cancel."""
     Result, Attempt = Result, Attempt
-    ModelSelection, ExecutionRequirements = ModelSelection, ExecutionRequirements
     process = process
+    rung_group = staticmethod(contracts.rung_group)
+    model_group = staticmethod(contracts.model_group)
 
-    def __init__(self):
+    def __init__(self, ladder=LADDER):
         self.calls = []
         self.fail = False
-        self.family = 'review-family'
-        self.refuse = False
+        self.group = 'review-group'
+        self.ladder = tuple(ladder)
+
+    def active_chain(self):
+        return self.ladder
 
     def call(self, prompt, **kwargs):
         self.calls.append((prompt, kwargs))
         if self.fail:
             raise RuntimeError('synthetic transport interruption')
-        if self.refuse:
-            return Result(error='capability_unavailable', outcome='capability_unavailable', execution_started=False)
-        return Result(text='full response ' + str(len(self.calls)), provider='fake',
-            effective_model='synthetic-model', model_source='provider_reported',
-            model_family=self.family, effects='observed' if kwargs['mode'] == 'agent' else 'none',
-            execution_started=True, outcome='success')
+        return Result(text='full response ' + str(len(self.calls)), provider='fake', group=self.group,
+                      attempts=[Attempt('fake', True)])
+
+
+@pytest.fixture(autouse=True)
+def _cwd(tmp_path, monkeypatch):
+    # llmcall 0.3.0 runs its clients in the process cwd, so workflows anchor there.
+    monkeypatch.chdir(tmp_path)
 
 
 def descriptor(tmp_path, cli=False):
@@ -54,8 +61,7 @@ def descriptor(tmp_path, cli=False):
 
 
 def author():
-    return Result(text='Complete original producer result', provider='fake',
-                  model_source='provider_reported', model_family='author-family')
+    return Result(text='Complete original producer result', provider='fake', group='author-group')
 
 
 def workflow(tmp_path, client, built, **kwargs):
@@ -72,8 +78,8 @@ def test_missing_attempt_contract_is_refused_before_state_write(tmp_path):
     assert not fake.calls
 
 
-@pytest.mark.parametrize('missing', ['ModelSelection', 'ExecutionRequirements'])
-def test_missing_client_capability_is_refused_before_state_write(tmp_path, missing):
+@pytest.mark.parametrize('missing', ['rung_group', 'model_group', 'active_chain'])
+def test_client_without_the_0_3_contract_is_refused_before_state_write(tmp_path, missing):
     fake = Fake()
     setattr(fake, missing, None)
     with pytest.raises(ValueError, match='llmcall_contract_unavailable:' + missing):
@@ -98,10 +104,38 @@ def test_restart_replays_result_and_continuation_retains_every_round(tmp_path):
     text, arguments = fake.calls[-1]
     for value in ('Round one', 'old contents', 'full response 1', 'Full rebuttal', 'revised contents', 'Complete original producer result'):
         assert value in text
-    assert arguments['selection'] == ModelSelection('exact', 'user-exact')
-    assert arguments['effort'] == 'medium' and arguments['avoid'] == 'author-family'
+    assert arguments['model'] == 'user-exact' and arguments['gateway_best'] is False
+    assert arguments['effort'] == 'medium' and arguments['avoid'] == 'author-group'
+    assert not {'selection', 'requirements', 'cwd', 'env', 'cancel'} & set(arguments)
     assert resumed.run('poll', context='review', operation='poll', prompt='').text == second.text
     assert len(fake.calls) == 2
+    stored = json.loads(sorted(first.root.glob('*.request.json'))[0].read_text())
+    assert stored['request']['encoding_version'] == 3
+
+
+def test_recording_failure_round_trip_preserves_completed_provider_result(tmp_path):
+    import llmcall
+    from tools.make_fixtures import make_workflow_recording_result
+
+    fake, built = Fake(), descriptor(tmp_path)
+    fake.Result, fake.Attempt = llmcall.Result, llmcall.Attempt
+    fake.RecordingFailure = llmcall.RecordingFailure
+    recorded = make_workflow_recording_result(llmcall)
+
+    def answer(prompt, **kwargs):
+        fake.calls.append((prompt, kwargs))
+        return recorded
+
+    fake.call = answer
+    options = dict(context='review', operation='start', prompt='Synthetic review', producer=author())
+    first = workflow(tmp_path, fake, built).run('one', **options)
+    assert first and first.error is None and len(fake.calls) == 1
+    restored = workflow(tmp_path, fake, built).run('one', **options)
+    assert restored and restored.error is None and restored.text == recorded.text
+    assert restored.provider == recorded.provider
+    assert restored.recording_errors == recorded.recording_errors
+    assert isinstance(restored.recording_errors[0], llmcall.RecordingFailure)
+    assert len(fake.calls) == 1
 
 
 def test_interrupted_call_and_orphan_intent_never_rerun_after_restart(tmp_path):
@@ -113,12 +147,23 @@ def test_interrupted_call_and_orphan_intent_never_rerun_after_restart(tmp_path):
     fake.fail = False
     resumed = workflow(tmp_path, fake, built)
     result = resumed.run_cli('edit', ['exec', '--sandbox', 'workspace-write'], 'Perform approved edit')
-    assert result.outcome == 'workflow_outcome_uncertain' and result.effects == 'possible'
-    assert resumed.run_cli('followup', ['exec', 'resume', '--last'], 'Continue').outcome == 'workflow_outcome_uncertain'
+    assert not result and result.error == 'workflow_outcome_uncertain'
+    assert resumed.run_cli('followup', ['exec', 'resume', '--last'], 'Continue').error == 'workflow_outcome_uncertain'
     assert len(fake.calls) == 1
     next(first.root.glob('*.result.json')).unlink()
-    assert resumed.run_cli('edit', ['exec', '--sandbox', 'workspace-write'], 'Perform approved edit').outcome == 'workflow_outcome_uncertain'
+    assert resumed.run_cli('edit', ['exec', '--sandbox', 'workspace-write'], 'Perform approved edit').error == 'workflow_outcome_uncertain'
     assert len(fake.calls) == 1
+
+
+def test_failed_agent_call_that_started_a_client_is_uncertain(tmp_path):
+    fake, built = Fake(), descriptor(tmp_path, cli=True)
+    fake.call = lambda prompt, **kwargs: (fake.calls.append((prompt, kwargs)) or
+                                          Result(error='timeout', attempts=[Attempt('codex', False, reason='timeout')]))
+    session = workflow(tmp_path, fake, built)
+    assert not session.run_cli('edit', ['exec', '--sandbox', 'workspace-write'], 'Edit')
+    receipt = json.loads(next(session.root.glob('*.result.json')).read_text())
+    assert receipt['state'] == 'uncertain'
+    assert session.run_cli('next', ['exec'], 'Other').error == 'workflow_outcome_uncertain'
 
 
 def test_cli_followup_keeps_effects_history_and_exact_user_precedence(tmp_path):
@@ -129,10 +174,11 @@ def test_cli_followup_keeps_effects_history_and_exact_user_precedence(tmp_path):
     assert resumed.run_cli('next', ['exec', 'resume', '--last'], 'Inspect the edit')
     text, options = fake.calls[-1]
     assert 'Edit once' in text and 'full response 1' in text and 'Inspect the edit' in text
-    assert options['selection'] == ModelSelection('exact', 'explicit-user')
-    assert options['requirements'].access == 'workspace_write'
+    assert options['model'] == 'explicit-user' and options['gateway_best'] is False
+    # workspace_write is enforced by running only on sandboxed (codex) rungs in agent mode.
+    assert options['mode'] == 'agent' and options['chain'] == ['codexg', 'codex']
     assert len(fake.calls) == 2
-    assert resumed.run_cli('bad', ['exec', 'resume', 'native-id'], 'No').outcome == 'unsupported_cli_flag_or_native_session'
+    assert resumed.run_cli('bad', ['exec', 'resume', 'native-id'], 'No').error == 'unsupported_cli_flag_or_native_session'
     assert len(fake.calls) == 2
 
 
@@ -141,24 +187,36 @@ def test_identity_and_permissions_failures_are_explicit(tmp_path):
     session = workflow(tmp_path, fake, built)
     unknown = Result(provider='fake', text='Unknown actual identity')
     result = session.run('unknown', context='review', operation='start', prompt='Review', producer=unknown)
-    assert result.outcome == 'independent_reviewer_unavailable' and not fake.calls
-    fake.family = 'author-family'
+    assert result.error == 'independent_reviewer_unavailable' and not fake.calls
+    fake.group = 'author-group'
     result = session.run('same', context='review', operation='start', prompt='Review', producer=author())
-    assert result.outcome == 'independent_reviewer_unavailable'
+    assert result.error == 'independent_reviewer_unavailable'
     fresh = DurableWorkflow(tmp_path / '.codex', tmp_path / '.agents/skills', 'adversary', built, client=fake)
     result = fresh.run('unsafe', context='fresh', operation='start', prompt='Read repo', producer=author(), mode='agent')
-    assert result.outcome == 'independent_repository_review_requires_read_only'
-    fake.refuse = True
+    assert result.error == 'independent_repository_review_requires_read_only'
+    fake.group = 'review-group'
+    calls = len(fake.calls)
     result = fresh.run('restricted', context='fresh', operation='start', prompt='Read repo', producer=author(), mode='agent',
-                       requirements=ExecutionRequirements(access='read_only'))
-    assert result.outcome == 'capability_unavailable'
+                       requirements={'access': 'read_only'})
+    assert result
+    options = fake.calls[-1][1]
+    assert len(fake.calls) == calls + 1
+    assert options['mode'] == 'judge' and options['chain'] == ['codexg', 'codex'] and options['avoid'] == 'author-group'
+
+
+def test_read_only_review_without_a_sandboxed_rung_fails_closed(tmp_path):
+    fake, built = Fake(ladder=('cc', 'claude')), descriptor(tmp_path)
+    fresh = DurableWorkflow(tmp_path / '.codex', tmp_path / '.agents/skills', 'adversary', built, client=fake)
+    result = fresh.run('restricted', context='fresh', operation='start', prompt='Read repo', producer=author(), mode='agent',
+                       requirements={'access': 'read_only'})
+    assert result.error == 'execution_requirements_unenforceable:no_sandboxed_rung' and not fake.calls
 
 
 def test_request_id_reuse_cannot_change_task(tmp_path):
     fake, built = Fake(), descriptor(tmp_path, cli=True)
     session = workflow(tmp_path, fake, built)
     session.run_cli('one', ['exec'], 'One')
-    assert session.run_cli('one', ['exec'], 'Different').outcome == 'request_id_reused_with_different_input'
+    assert session.run_cli('one', ['exec'], 'Different').error == 'request_id_reused_with_different_input'
     assert len(fake.calls) == 1
 
 
@@ -185,3 +243,37 @@ print(result.text)
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'full response 1'
+
+
+def _write_legacy(session, built, tmp_path):
+    request, receipt = contracts.legacy_v2_records(
+        artifact_hash=built['artifact_hash'], workflow_id='synthetic-workflow', cwd=str(Path.cwd().resolve()),
+        request_id='legacy-1', prompt='Round one', reply='Saved legacy reply',
+        producer_text='Complete original producer result', producer_family='author-group',
+        reviewer_family='review-group', exact_model='user-exact')
+    saved = {'sequence': 0, 'previous': None, 'request': request}
+    receipt = {'request_hash': _hash(saved), **receipt}
+    receipt['receipt_hash'] = _hash(receipt)
+    session.root.mkdir(parents=True)
+    (session.root / '00000000.request.json').write_text(json.dumps(saved))
+    (session.root / '00000000.result.json').write_text(json.dumps(receipt))
+
+
+def test_version_2_history_stays_readable_and_resumable(tmp_path):
+    fake, built = Fake(), descriptor(tmp_path)
+    session = workflow(tmp_path, fake, built)
+    _write_legacy(session, built, tmp_path)
+    saved = session.run('legacy-1', context='review', operation='start', prompt='Round one',
+                        producer=author(), exact_model='user-exact')
+    assert saved.text == 'Saved legacy reply' and saved.group == 'review-group'
+    assert saved.legacy_fields['outcome'] == 'success' and not fake.calls
+    # Negative control: the same ID with a different producer is still refused.
+    other = Result(text='Different producer', provider='fake', group='author-group')
+    assert session.run('legacy-1', context='review', operation='start', prompt='Round one',
+                       producer=other, exact_model='user-exact').error == 'request_id_reused_with_different_input'
+    reply = session.run('legacy-2', context='review', operation='reply', prompt='Next round')
+    assert reply and len(fake.calls) == 1
+    text, options = fake.calls[0]
+    assert 'Saved legacy reply' in text and 'Complete original producer result' in text
+    assert options['model'] == 'user-exact' and options['gateway_best'] is False
+    assert options['avoid'] == 'author-group' and options['mode'] == 'judge'

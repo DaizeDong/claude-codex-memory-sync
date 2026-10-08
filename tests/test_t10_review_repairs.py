@@ -220,28 +220,45 @@ print('fresh-process-json-preserved')
     assert 'fresh-process-json-preserved' in completed.stdout
 
 
-def test_relative_workspace_stays_anchored_and_transition_is_explicit(tmp_path):
+def test_relative_workspace_stays_anchored_and_transition_is_explicit(tmp_path, monkeypatch):
     fake, built = Fake(), descriptor(tmp_path, cli=True)
+    anchor = tmp_path / 'caller-a/project'
+    other = tmp_path / 'caller-b/other'
+    anchor.mkdir(parents=True)
+    other.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    edit = ['exec', '-C', 'project', '--sandbox', 'workspace-write']
     with process.use_context(process.CallContext(str(tmp_path / 'caller-a'), {})):
-        assert workflow(tmp_path, fake, built).run_cli('first', ['exec', '-C', 'project', '--sandbox', 'workspace-write'], 'Edit')
-    anchor = str(tmp_path / 'caller-a/project')
+        # llmcall 0.3.0 runs clients in the process cwd, so a workspace elsewhere is refused.
+        refused = workflow(tmp_path, fake, built).run_cli('first', edit, 'Edit')
+        assert refused.error == 'workspace_requires_process_cwd' and not fake.calls
+        monkeypatch.chdir(anchor)
+        assert workflow(tmp_path, fake, built).run_cli('second', edit, 'Edit')
     with process.use_context(process.CallContext(str(tmp_path / 'caller-b'), {})):
         resumed = workflow(tmp_path, fake, built)
         assert resumed.run_cli('next', ['exec', 'resume', '--last'], 'Continue')
-        assert fake.calls[-1][1]['cwd'] == anchor
-        assert fake.calls[-1][1]['requirements'].workspace == anchor
         blocked = resumed.run_cli('move', ['exec', 'resume', '--last', '-C', 'other'], 'Move')
-        assert blocked.outcome == 'workspace_transition_requires_explicit_authorization'
+        assert blocked.error == 'workspace_transition_requires_explicit_authorization'
         assert len(fake.calls) == 2
-        assert resumed.run_cli('move', ['exec', 'resume', '--last', '-C', 'other'], 'Move', allow_workspace_change=True)
-        assert fake.calls[-1][1]['cwd'] == str(tmp_path / 'caller-b/other')
-    requests = [json.loads(p.read_text())['request'] for p in resumed.root.glob('*.request.json')]
+        moved = resumed.run_cli('move', ['exec', 'resume', '--last', '-C', 'other'], 'Move', allow_workspace_change=True)
+        assert moved.error == 'workspace_requires_process_cwd' and len(fake.calls) == 2
+        monkeypatch.chdir(other)
+        assert resumed.run_cli('move-2', ['exec', 'resume', '--last', '-C', 'other'], 'Move', allow_workspace_change=True)
+        assert len(fake.calls) == 3
+    requests = [json.loads(p.read_text())['request'] for p in sorted(resumed.root.glob('*.request.json'))]
     assert all(Path(r['cwd']).is_absolute() for r in requests)
-    assert len(requests) == 3
+    assert [Path(r['cwd']) for r in requests[1:3]] == [anchor.resolve()] * 2
+    assert Path(requests[-1]['cwd']) == other.resolve()
+    assert len(requests) == 5
 
 
-def test_cli_workspace_anchor_survives_a_new_process(tmp_path):
+@pytest.mark.parametrize('inside', [True, False])
+def test_cli_workspace_anchor_survives_a_new_process(tmp_path, monkeypatch, inside):
     fake, built = Fake(), descriptor(tmp_path, cli=True)
+    anchor = tmp_path / 'caller-a/project'
+    anchor.mkdir(parents=True)
+    (tmp_path / 'caller-b').mkdir()
+    monkeypatch.chdir(anchor)
     with process.use_context(process.CallContext(str(tmp_path / 'caller-a'), {})):
         assert workflow(tmp_path, fake, built).run_cli('first', ['exec', '-C', 'project', '--sandbox', 'workspace-write'], 'Edit')
     (tmp_path / 'restart.json').write_text(json.dumps(built))
@@ -250,15 +267,21 @@ sys.path[:0] = json.loads(sys.argv[1])
 from test_t10_workflow_context import Fake, workflow, process
 root = pathlib.Path(sys.argv[2]); fake = Fake()
 with process.use_context(process.CallContext(str(root / 'caller-b'), {})):
-    assert workflow(root, fake, json.loads((root / 'restart.json').read_text())).run_cli('next', ['exec', 'resume', '--last'], 'Continue')
-options = fake.calls[0][1]
-assert options['cwd'] == str(root / 'caller-a/project')
-assert options['requirements'].workspace == options['cwd']
-print('fresh-process-workspace-preserved')
+    result = workflow(root, fake, json.loads((root / 'restart.json').read_text())).run_cli('next', ['exec', 'resume', '--last'], 'Continue')
+print(json.dumps({'ok': bool(result), 'error': result.error, 'calls': len(fake.calls)}))
 '''
-    completed = subprocess.run([sys.executable, '-B', '-c', script, json.dumps(sys.path), str(tmp_path)], capture_output=True, text=True, timeout=30)
+    # Negative control: the same continuation from another process cwd is refused, not rerouted.
+    cwd = anchor if inside else tmp_path / 'caller-b'
+    completed = subprocess.run([sys.executable, '-B', '-c', script, json.dumps(sys.path), str(tmp_path)],
+                               capture_output=True, text=True, timeout=30, cwd=cwd)
     assert completed.returncode == 0, completed.stderr
-    assert 'fresh-process-workspace-preserved' in completed.stdout
+    observed = json.loads(completed.stdout)
+    if inside:
+        assert observed == {'ok': True, 'error': None, 'calls': 1}
+    else:
+        assert observed == {'ok': False, 'error': 'workspace_requires_process_cwd', 'calls': 0}
+    requests = [json.loads(p.read_text())['request'] for p in sorted((tmp_path / '.codex').rglob('*.request.json'))]
+    assert all(Path(r['cwd']) == anchor.resolve() for r in requests)
 
 
 def test_legacy_records_offer_explicit_read_without_replay_or_guessed_context(tmp_path):
@@ -275,7 +298,7 @@ def test_legacy_records_offer_explicit_read_without_replay_or_guessed_context(tm
     receipt['receipt_hash'] = _hash(receipt)
     (session.root / '00000000.request.json').write_text(json.dumps(saved))
     (session.root / '00000000.result.json').write_text(json.dumps(receipt))
-    assert session.run_cli('next', ['exec', 'resume', '--last'], 'Continue').outcome == 'legacy_workflow_requires_explicit_migration'
+    assert session.run_cli('next', ['exec', 'resume', '--last'], 'Continue').error == 'legacy_workflow_requires_explicit_migration'
     result = session.read_legacy_result('legacy')
     assert result.text == 'Saved result' and result.data == opaque
     assert not fake.calls

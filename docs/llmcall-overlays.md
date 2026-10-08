@@ -28,7 +28,8 @@ No second parser, catalog, writer, registry or installer is introduced.
 The installed `profile_bridge.workflows.load_descriptor` checks the source pin
 before use. Roles call `skill_smith.role_entrypoints.invoke`. Stateful workflows
 use `profile_bridge.workflows.DurableWorkflow`. Both receive inherited session
-options, exact user choices and llmcall ExecutionRequirements. All nested model
+options, exact user choices and execution requirement mappings, mapped onto the
+llmcall 0.3.0 call options by `skill_smith.role_entrypoints`. All nested model
 and agent work follows llmcall; normal local skill tools remain local operations.
 The new modules are included by the existing `profile_bridge*` package discovery.
 Generated content never imports a checkout or RUN directory.
@@ -55,18 +56,24 @@ revisions require review instead of broad text replacement.
 explicit caller roots and a workflow ID. `run(request_id, context=..., operation=
 'start'|'reply'|'poll', prompt=..., inputs=..., producer=...)` is a single turn;
 the authorized caller controls rounds, output publication and optional actions.
-The actual producer Result and provider-reported reviewer family establish
-independence through llmcall avoid checks. A fresh repository reviewer uses agent
-mode and must request enforced read-only execution. Prompt instructions alone do
-not satisfy that requirement. Cancellation and the remaining timeout are passed
-to llmcall. Project output actions are not implicit effects of a judge call.
+The actual producer Result and the reviewer's `Result.group`, as llmcall reports
+them, establish independence through llmcall avoid checks. A fresh repository
+reviewer uses agent mode and must request enforced read-only execution, which
+runs on llmcall's read-only Codex sandbox; without a Codex rung it fails closed.
+Prompt instructions alone do not satisfy that requirement. The timeout is passed
+to llmcall; a cancellation token is checked before dispatch, because llmcall 0.3.0
+cannot stop a started call. The workspace must be the caller's process cwd and the
+environment must match it. Project output actions are not implicit effects of a
+judge call.
 
 Private history lives in `<codex>/claude-sync/workflows/<workflow-id-hash>/`.
 Existing profile locks and fleet no-replace primitives protect immutable request
 and result records. Each result records the complete transcript, requirements,
 model intent, producer/reviewer evidence, effects and preceding receipt hash.
 A repeated request ID returns its saved result; different input with the same ID
-fails. An interrupted request or possibly side-effectful failed result remains
+fails. New records use encoding version 3 (plain requirement and option mappings);
+version 2 records from the llmcall 0.2.0 era are read, compared by meaning and
+resumed, with their retired Result fields kept as `legacy_fields`. An interrupted request or possibly side-effectful failed result remains
 uncertain and blocks new work in that workflow. There is no automatic retry,
 global orchestration service, SQLite ledger or native memory write. If private
 durable storage is disallowed, this compatibility mode is unsupported.
