@@ -1,6 +1,8 @@
 # Roadmap
 
-Current: Python profile package **0.3.0**; original PowerShell converter **v1.0.0**.
+Current: Python profile package **0.3.0**.
+
+Original PowerShell converter release: **v1.0.0**.
 
 ## Current capabilities
 
