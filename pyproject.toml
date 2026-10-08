@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = ["fleet-guards==0.2.1", "skill-smith==0.2.0", "PyYAML>=6.0,<7"]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<10", "llmcall>=0.3.1"]
+test = ["pytest>=8,<10"]
 
 [project.scripts]
 profile-sync = "profile_sync:main"
