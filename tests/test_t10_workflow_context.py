@@ -18,8 +18,9 @@ LADDER = ('codexg', 'codex', 'cc', 'claude')
 
 
 class Fake:
-    """The llmcall 0.3.0 surface: call options only, no per-call cwd/env/cancel."""
+    """The llmcall 0.3.1 surface: call options only, no per-call cwd/env/cancel."""
     Result, Attempt = Result, Attempt
+    RecordingFailure = contracts.RecordingFailure
     process = process
     rung_group = staticmethod(contracts.rung_group)
     model_group = staticmethod(contracts.model_group)
@@ -113,29 +114,34 @@ def test_restart_replays_result_and_continuation_retains_every_round(tmp_path):
     assert stored['request']['encoding_version'] == 3
 
 
-def test_recording_failure_round_trip_preserves_completed_provider_result(tmp_path):
-    import llmcall
+def assert_recording_failure_round_trip(tmp_path, client):
+    """Exercise the same codec assertions with synthetic or verified installed types."""
     from tools.make_fixtures import make_workflow_recording_result
 
     fake, built = Fake(), descriptor(tmp_path)
-    fake.Result, fake.Attempt = llmcall.Result, llmcall.Attempt
-    fake.RecordingFailure = llmcall.RecordingFailure
-    recorded = make_workflow_recording_result(llmcall)
+    fake.Result, fake.Attempt = client.Result, client.Attempt
+    fake.RecordingFailure = client.RecordingFailure
+    recorded = make_workflow_recording_result(client)
 
     def answer(prompt, **kwargs):
         fake.calls.append((prompt, kwargs))
         return recorded
 
     fake.call = answer
-    options = dict(context='review', operation='start', prompt='Synthetic review', producer=author())
+    options = dict(context='review', operation='start', prompt='Synthetic review',
+                   producer=client.Result(text='Synthetic producer result', provider='fake', group='author-group'))
     first = workflow(tmp_path, fake, built).run('one', **options)
     assert first and first.error is None and len(fake.calls) == 1
     restored = workflow(tmp_path, fake, built).run('one', **options)
     assert restored and restored.error is None and restored.text == recorded.text
     assert restored.provider == recorded.provider
     assert restored.recording_errors == recorded.recording_errors
-    assert isinstance(restored.recording_errors[0], llmcall.RecordingFailure)
+    assert isinstance(restored.recording_errors[0], client.RecordingFailure)
     assert len(fake.calls) == 1
+
+
+def test_recording_failure_round_trip_preserves_completed_provider_result(tmp_path):
+    assert_recording_failure_round_trip(tmp_path, contracts)
 
 
 def test_interrupted_call_and_orphan_intent_never_rerun_after_restart(tmp_path):

@@ -48,6 +48,13 @@ v1.0.0 release below.
 
 ## [Unreleased]
 
+### Fixed
+
+- Public tests use generated llmcall 0.3.1 contracts instead of installing an
+  unrelated same-named PyPI package. A separate opt-in codec test requires a
+  reviewed 0.3.1 wheel and matching installation provenance; CI reports it as
+  `NOT_RUN` when disabled.
+
 ### Added
 
 - **Full profile sync (`sync-all.cmd`, `run_profile_sync.py` and the `profile_*` modules).**

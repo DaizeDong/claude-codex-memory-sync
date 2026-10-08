@@ -71,9 +71,9 @@ def make_profile_agent_custom_paths(plugin_root):
 
 
 def make_workflow_client_contracts():
-    """Generate a synthetic llmcall 0.3.0-shaped client; no private runtime is imported.
+    """Generate a synthetic llmcall 0.3.1-shaped client; no private runtime is imported.
 
-    Result and Attempt carry the 0.3.0 fields. ``legacy_v2_records`` produces
+    Result, Attempt and RecordingFailure carry the 0.3.1 fields. ``legacy_v2_records`` produces
     request and receipt bodies in the retired 0.2.0 encoding, so readers can be
     checked against the shape existing private workflow histories hold.
     """
@@ -89,6 +89,15 @@ def make_workflow_client_contracts():
         ms: int = 0
         error: str | None = None
         reason: str | None = None
+        group: str | None = None
+        redo: str | None = None
+        supervision: str | None = None
+
+    @dataclass(frozen=True)
+    class RecordingFailure:
+        artifact: str
+        reason: str
+        error: str
 
     @dataclass
     class Result:
@@ -99,6 +108,7 @@ def make_workflow_client_contracts():
         attempts: list = field(default_factory=list)
         depth: int = 0
         group: str | None = None
+        recording_errors: list = field(default_factory=list)
 
         def __bool__(self):
             return self.provider is not None
@@ -172,9 +182,38 @@ def make_workflow_client_contracts():
 
     process = SimpleNamespace(CallContext=CallContext, use_context=use_context,
                               resolve_context=resolve_context)
-    return SimpleNamespace(Result=Result, Attempt=Attempt, rung_group=rung_group,
+    return SimpleNamespace(Result=Result, Attempt=Attempt, RecordingFailure=RecordingFailure, rung_group=rung_group,
                            model_group=model_group, process=process,
                            legacy_v2_records=legacy_v2_records)
+
+
+def make_llmcall_wheel_installation(root):
+    """Generate synthetic installed-wheel metadata for integration admission tests."""
+    import json
+    from importlib.metadata import Distribution
+    from importlib.util import spec_from_file_location
+    from types import ModuleType
+
+    root = Path(root)
+    package = root / 'llmcall'
+    package.mkdir(parents=True)
+    module_path = package / '__init__.py'
+    module_path.write_text('# Synthetic package fixture.\n', encoding='utf-8')
+    metadata = root / 'llmcall-0.3.1.dist-info'
+    metadata.mkdir()
+    (metadata / 'METADATA').write_text('Metadata-Version: 2.1\nName: llmcall\nVersion: 0.3.1\n', encoding='utf-8')
+    (metadata / 'RECORD').write_text('llmcall/__init__.py,,\n', encoding='utf-8')
+    digest = 'a' * 64
+    receipt = {'url': 'file:///synthetic/llmcall-0.3.1-py3-none-any.whl',
+               'archive_info': {'hashes': {'sha256': digest}}}
+    (metadata / 'direct_url.json').write_text(json.dumps(receipt), encoding='utf-8')
+    module = ModuleType('llmcall')
+    module.__file__ = str(module_path)
+    module.__spec__ = spec_from_file_location('llmcall', module_path)
+    contracts = make_workflow_client_contracts()
+    for name in ('Result', 'Attempt', 'RecordingFailure'):
+        setattr(module, name, getattr(contracts, name))
+    return Distribution.at(metadata), module, digest, metadata
 
 
 def make_adapter_descriptions():

@@ -117,13 +117,34 @@ The profile transform and health checks do not call a model. Automation that add
 All tests use synthetic data in temporary directories:
 
 ```powershell
-python -m pytest tests -q
+python -m pytest tests -q -ra
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 ```
 
 The first command requires Python 3.11+. The second verifies the existing Windows PowerShell 5.1 memory-only bridge.
 
-Workflow-context tests use generated synthetic clients and make no model calls.
+Public CI uses generated synthetic llmcall 0.3.1 contracts and does not install
+`llmcall` from PyPI, whose same-named distribution is a different project.
+The skip summary reports the real-wheel integration as `NOT_RUN`. Passing these
+tests verifies the codec against the synthetic contract, not an installed client.
+
+To check the codec against real types, install a reviewed llmcall 0.3.1 wheel in
+a fresh environment with the development dependencies above. Obtain its expected
+SHA256 from the artifact review, then explicitly enable the integration:
+
+```powershell
+python -m pip install --no-deps C:\path\to\reviewed\llmcall-0.3.1-py3-none-any.whl
+$env:PROFILE_SYNC_LLM_CALL_WHEEL_SHA256 = 'REPLACE_WITH_REVIEWED_WHEEL_SHA256'
+$env:PROFILE_SYNC_LLM_CALL_INTEGRATION = '1'
+python -m pytest tests/test_llmcall_wheel_integration.py -q -ra
+```
+
+The enabled test fails unless distribution version 0.3.1, the installed wheel's
+`direct_url.json` SHA256, its recorded module location, and the required API all
+match. It checks preservation of `RecordingFailure` with real result types and
+a synthetic provider response; it makes no model calls and does not establish
+provider or end-to-end workflow compatibility.
+
 Executing a workflow requires an installed `llmcall` client with the 0.3.0 call
 contract; an older client fails before workflow state is written. Its clients run
 in the caller's process cwd and environment, so a workflow continues only from

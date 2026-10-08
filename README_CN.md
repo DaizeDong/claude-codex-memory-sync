@@ -104,11 +104,24 @@ python .\run_profile_sync.py --apply --write-status --probe-mcp
 测试数据全部在临时目录中合成：
 
 ```powershell
-python -m pytest tests -q
+python -m pytest tests -q -ra
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 ```
 
 第一条要求 Python 3.11+；第二条验证原有 Windows PowerShell 5.1 单项目记忆桥。
+
+公开 CI 使用生成的 llmcall 0.3.1 合成契约，不从 PyPI 安装 `llmcall`，因为 PyPI 上的同名包属于另一个项目。跳过摘要会将真实 wheel 集成测试标为 `NOT_RUN`。这些测试通过，只说明编解码器符合合成契约，不能证明已安装客户端兼容。
+
+如需用真实类型验证编解码器，先在新环境中安装上面的开发依赖，再安装经过审查的 llmcall 0.3.1 wheel。预期 SHA256 必须来自产物审查，然后显式启用集成测试：
+
+```powershell
+python -m pip install --no-deps C:\path\to\reviewed\llmcall-0.3.1-py3-none-any.whl
+$env:PROFILE_SYNC_LLM_CALL_WHEEL_SHA256 = 'REPLACE_WITH_REVIEWED_WHEEL_SHA256'
+$env:PROFILE_SYNC_LLM_CALL_INTEGRATION = '1'
+python -m pytest tests/test_llmcall_wheel_integration.py -q -ra
+```
+
+启用后，测试会核对包版本是否为 0.3.1、安装记录 `direct_url.json` 中的 wheel SHA256 是否符合预期，以及导入模块是否属于该包并提供所需 API。任一项不符都会失败。测试用真实结果类型和合成响应验证 `RecordingFailure` 能否在保存后恢复，不调用模型，也不证明 provider 或完整工作流兼容。
 
 工作流上下文测试使用生成的合成客户端，不调用模型。执行工作流需要提供 0.3.0 调用接口的 `llmcall` 客户端；更早的客户端会在写入工作流状态之前报错。llmcall 的子进程运行在调用方进程的工作目录和环境里，所以工作流只能在锚定的工作目录中继续。从其他目录发起继续请求会报 `workspace_requires_process_cwd`，需要先切换到锚定目录；llmcall 0.2.0 则由每次调用传入该目录。幂等读取已经完成的请求仍可在任意目录进行。为 llmcall 0.2.0 写下的历史记录仍可读取和继续。源码测试通过不代表本机现有客户端支持这些契约。
 
