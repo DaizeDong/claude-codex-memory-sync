@@ -124,9 +124,16 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-test
 The first command requires Python 3.11+. The second verifies the existing Windows PowerShell 5.1 memory-only bridge.
 
 Workflow-context tests use generated synthetic clients and make no model calls.
-Executing a typed workflow requires a compatible installed `llmcall` client;
-missing contract types fail before workflow state is written. Passing the source
-tests does not establish that the current local client supports those contracts.
+Executing a workflow requires an installed `llmcall` client with the 0.3.0 call
+contract; an older client fails before workflow state is written. Its clients run
+in the caller's process cwd and environment, so a workflow continues only from
+its anchored workspace: a continuation started from another directory fails with
+`workspace_requires_process_cwd` (under llmcall 0.2.0 the anchor was passed per
+call instead), so change into the anchored workspace first. An idempotent
+retrieval of a completed request still answers from any directory. Histories
+written for llmcall 0.2.0 stay readable and
+resumable. Passing the source tests does not establish that the current local
+client supports those contracts.
 
 ## Memory-only bridge: design philosophy
 

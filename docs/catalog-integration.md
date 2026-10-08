@@ -45,7 +45,7 @@ qualify plugin names. Role execution and model routing are unchanged by T07.
 
 ## Producer prerequisite
 
-The dependency is pinned to the proposed `skill-smith==0.1.4` consumer interface.
+The dependency is pinned to the `skill-smith==0.2.0` consumer interface.
 The installed 0.1.3 catalog needs the staged additive T07 producer changes before
 this integration can run. `discover_profile` requires
 the producer capability names `workflow_roots`, `plugin_descriptors`, and

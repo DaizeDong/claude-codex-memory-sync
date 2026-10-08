@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## Python package [0.3.0] - 2026-10-07
+
+### Changed
+
+- Pin fleet-guards 0.2.1 so the shared runtime can install alongside llmcall's
+  canonical packaged companion resolver. Credential and filesystem APIs retain
+  their existing contracts.
+- Preserve llmcall recording failures when restoring durable results, including
+  successful provider responses whose private ledger write was refused.
+- Refresh the development Smith pin to its accepted storage and configuration
+  admission implementation.
+- Durable workflows run on the llmcall 0.3.0 call contract through skill-smith 0.2.0.
+  Requirements and inherited options are stored as plain mappings (encoding version 3),
+  failures are falsy Results whose `error` names the reason, and a failed agent call
+  that may have started a client is still recorded as uncertain.
+- Version 2 histories written with llmcall 0.2.0 types stay readable: idempotent
+  retrieval compares requests by meaning, legacy Results keep retired fields as
+  `legacy_fields`, a provider-reported model family becomes the answering group, and
+  an exact ModelSelection continues as an exact model.
+- A workspace other than the process cwd, a differing environment, a set cancellation
+  token and requirements llmcall cannot enforce fail closed before dispatch.
+- A continuation resumed from a directory other than its anchored workspace fails
+  with `workspace_requires_process_cwd` instead of running in the anchor, which
+  llmcall 0.2.0 received per call. CI installs skill-smith at fe38b760 (0.2.0 with
+  MCP isolation for read_only requirements).
+
 ## Python package [0.2.1] - 2026-10-05
 
 ### Fixed

@@ -6,6 +6,14 @@ import profile_memory as memory
 from profile_bridge import memory_outbox as outbox
 
 
+def make_workflow_recording_result(client):
+    """A successful synthetic provider response with an independent storage failure."""
+    return client.Result(
+        text='Synthetic completed response', provider='fake', group='review-group',
+        recording_errors=[client.RecordingFailure(
+            artifact='runtime-ledger', reason='admission_failed', error='Synthetic destination refused')])
+
+
 def make_windows_short_path(path):
     """Get a distinct native 8.3 alias for an existing synthetic test directory."""
     import ctypes
@@ -63,7 +71,12 @@ def make_profile_agent_custom_paths(plugin_root):
 
 
 def make_workflow_client_contracts():
-    """Generate a synthetic typed client; no private runtime package is imported."""
+    """Generate a synthetic llmcall 0.3.0-shaped client; no private runtime is imported.
+
+    Result and Attempt carry the 0.3.0 fields. ``legacy_v2_records`` produces
+    request and receipt bodies in the retired 0.2.0 encoding, so readers can be
+    checked against the shape existing private workflow histories hold.
+    """
     from contextlib import contextmanager
     from contextvars import ContextVar
     from dataclasses import dataclass, field
@@ -73,39 +86,30 @@ def make_workflow_client_contracts():
     class Attempt:
         provider: str = "fake"
         ok: bool = True
+        ms: int = 0
         error: str | None = None
+        reason: str | None = None
 
     @dataclass
     class Result:
         text: str = ""
-        provider: str = "fake"
-        error: str | None = None
-        outcome: str = "success"
-        effects: str = "none"
-        execution_started: bool | None = False
-        effective_model: str | None = None
-        model_source: str | None = None
-        model_family: str | None = None
+        provider: str | None = None
         data: object = None
+        error: str | None = None
         attempts: list = field(default_factory=list)
+        depth: int = 0
+        group: str | None = None
 
         def __bool__(self):
-            return bool(self.text) and self.error is None
+            return self.provider is not None
 
-    @dataclass(frozen=True)
-    class ModelSelection:
-        mode: str
-        model: str | None = None
+    groups = {"codexg": "codex", "codex": "codex", "cc": "claude", "claude": "claude"}
 
-    @dataclass(frozen=True)
-    class ExecutionRequirements:
-        access: str = "read_only"
-        workspace: str | None = None
-        tool_network: str = "default"
-        replay: str = "never_after_start"
-        required_tools: tuple = ()
-        required_mcp: tuple = ()
-        tool_allowlist: tuple | None = None
+    def rung_group(name):
+        return groups.get(name, name)
+
+    def model_group(model):
+        return "codex" if model.startswith("gpt-") else "claude" if model.startswith("claude-") else None
 
     @dataclass(frozen=True)
     class CallContext:
@@ -129,10 +133,48 @@ def make_workflow_client_contracts():
             target = Path(current.cwd) / target
         return CallContext(str(target.resolve()), {**current.env, **(env or {})})
 
+    def legacy_v2_records(*, artifact_hash, workflow_id, cwd, request_id, prompt, reply,
+                          producer_text, producer_family, reviewer_family, exact_model):
+        """One completed judge turn as llmcall 0.2.0 era code stored it."""
+        def contract(kind, fields):
+            return {"encoding": "contract", "type": kind, "fields": fields}
+
+        def legacy_result(text, family, outcome):
+            return contract("Result", {
+                "text": text, "provider": "fake", "data": None, "error": None, "attempts": [],
+                "depth": 0, "call_id": None, "effective_provider": "fake",
+                "effective_model": "synthetic-model", "model_family": family,
+                "policy_source": None, "execution_started": True, "outcome": outcome,
+                "effects": "none", "configured_model": None, "requested_model": None,
+                "model_source": "provider_reported", "review_state": "not_requested",
+                "review_error": None, "selection_reason": None, "adapter_family": None,
+                "provider_source": "unknown"})
+
+        producer = legacy_result(producer_text, producer_family, None)
+        result = legacy_result(reply, reviewer_family, "success")
+        selection = contract("ModelSelection", {"intent": "exact", "model": exact_model, "family": None})
+        request = {"encoding_version": 2, "request_id": request_id, "workflow_id": workflow_id,
+                   "artifact_hash": artifact_hash, "context": "review", "operation": "start",
+                   "prompt": prompt, "inputs": None, "producer": producer, "mode": "judge",
+                   "exact_model": exact_model, "effort": None, "requirements": None, "cwd": cwd,
+                   "inherited": {"encoding": "dict", "items": {}}, "compatibility": None,
+                   "environment_digest": None,
+                   "workspace_request": {"cwd": None, "workspace": None, "allow_change": False}}
+        history = [{"role": "user", "content": {"encoding": "dict", "items": {
+                        "prompt": prompt, "inputs": {"encoding": "dict", "items": {}},
+                        "producer_text": producer_text}}},
+                   {"role": "assistant", "content": reply}]
+        session = {"encoding_version": 2, "completed": {"0": result}, "contexts": {"review": {
+            "history": [{"encoding": "dict", "items": item} for item in history],
+            "producer": producer, "result": result, "requirements": None, "cwd": cwd,
+            "inherited": {"encoding": "dict", "items": {"selection": selection}}}}}
+        return request, {"state": "completed", "result": result, "session": session}
+
     process = SimpleNamespace(CallContext=CallContext, use_context=use_context,
                               resolve_context=resolve_context)
-    return SimpleNamespace(Result=Result, Attempt=Attempt, ModelSelection=ModelSelection,
-                           ExecutionRequirements=ExecutionRequirements, process=process)
+    return SimpleNamespace(Result=Result, Attempt=Attempt, rung_group=rung_group,
+                           model_group=model_group, process=process,
+                           legacy_v2_records=legacy_v2_records)
 
 
 def make_adapter_descriptions():

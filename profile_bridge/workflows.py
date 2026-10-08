@@ -7,12 +7,19 @@ without its result is uncertain after restart and is never automatically replaye
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
 from fleet_guards.filesystem import create_no_replace
 from profile_lock import profile_locks
 from skill_smith import overlays, role_entrypoints, source_workflows
+
+# Version 3 records hold plain requirement and session-option mappings for the
+# llmcall 0.3.0 contract. Version 2 records (typed 0.2.0 ModelSelection and
+# ExecutionRequirements, richer Result fields) stay readable and resumable.
+ENCODING_VERSION = 3
+READABLE_ENCODINGS = frozenset({2, 3})
 
 
 def _json(value):
@@ -47,6 +54,32 @@ def _encode(value):
     raise ValueError('workflow_context_not_serializable')
 
 
+def _construct(client, kind, data):
+    """Build a client contract from stored fields, keeping retired fields readable.
+
+    llmcall 0.2.0 Results carried fields 0.3.0 dropped. They are attached as
+    ``legacy_fields`` instead of failing the read; a provider-reported 0.2.0
+    model family is the 0.3.0 answering group, so it becomes ``group``.
+    """
+    cls = getattr(client, kind, None)
+    if not callable(cls):
+        raise ValueError('workflow_contract_unavailable:' + kind)
+    try:
+        params = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        params = {}
+    open_kwargs = any(p.kind is p.VAR_KEYWORD for p in params.values())
+    accepted = {k: v for k, v in data.items() if open_kwargs or k in params}
+    legacy = {k: v for k, v in data.items() if k not in accepted}
+    if (kind == 'Result' and 'group' in params and accepted.get('group') is None
+            and legacy.get('model_source') == 'provider_reported' and legacy.get('model_family')):
+        accepted['group'] = legacy['model_family']
+    value = cls(**accepted)
+    if legacy:
+        value.legacy_fields = legacy
+    return value
+
+
 def _decode(value, client):
     if isinstance(value, list):
         return [_decode(v, client) for v in value]
@@ -58,17 +91,15 @@ def _decode(value, client):
         # Stub types can have different names; persistence uses structural kinds
         # assigned by _session below for llmcall options and Results.
         kind = value['type']
-        if kind not in {'Result', 'Attempt', 'ModelSelection', 'ExecutionRequirements'}:
+        if kind not in {'Result', 'Attempt', 'RecordingFailure', 'ModelSelection', 'ExecutionRequirements'}:
             raise ValueError('unsupported_workflow_contract_type')
-        cls = getattr(client, kind, None)
-        if not callable(cls):
-            raise ValueError('workflow_contract_unavailable:' + kind)
         data = {k: _decode(v, client) for k, v in value['fields'].items()}
         if kind == 'ExecutionRequirements':
-            for name in ('required_tools', 'required_mcp', 'tool_allowlist'):
-                if data.get(name) is not None:
-                    data[name] = tuple(data[name])
-        return cls(**data)
+            # Retired 0.2.0 type: read as the plain mapping llmcall 0.3.0 callers use.
+            return role_entrypoints.requirements_mapping(data)
+        if kind == 'ModelSelection':
+            return data
+        return _construct(client, kind, data)
     raise ValueError('invalid_workflow_encoding')
 
 
@@ -82,27 +113,45 @@ def _contract(value, kind):
 def _session(session):
     contexts = {}
     for name, state in session.contexts.items():
-        options = dict(state['inherited'])
-        selection = options.pop('selection', None)
-        inherited = _encode(options)
-        if selection is not None:
-            inherited['items']['selection'] = _contract(selection, 'ModelSelection')
         contexts[name] = {'history': _encode(state['history']),
             'producer': _contract(state['producer'], 'Result'),
             'result': _contract(state['result'], 'Result'),
-            'requirements': _contract(state['requirements'], 'ExecutionRequirements'),
+            'requirements': _encode(state['requirements']),
             'cwd': state.get('cwd'),
-            'inherited': inherited}
-    return {'encoding_version': 2, 'contexts': contexts, 'completed': {str(k): _contract(v, 'Result') for k, v in session.completed.items()}}
+            'effects': state.get('effects', 'possible'),
+            'inherited': _encode(role_entrypoints.normalize_inherited(state['inherited']))}
+    return {'encoding_version': ENCODING_VERSION, 'contexts': contexts,
+            'completed': {str(k): _contract(v, 'Result') for k, v in session.completed.items()}}
 
 
 def _restore(session, state):
-    if state.get('encoding_version') != 2:
+    if state.get('encoding_version') not in READABLE_ENCODINGS:
         raise ValueError('legacy_workflow_requires_explicit_migration')
-    session.contexts = {name: {key: value if key == 'cwd' else _decode(value, session.client)
-                              for key, value in context.items()}
-                        for name, context in state['contexts'].items()}
+    contexts = {}
+    for name, context in state['contexts'].items():
+        restored = {key: value if key in ('cwd', 'effects') else _decode(value, session.client)
+                    for key, value in context.items()}
+        restored['requirements'] = role_entrypoints.requirements_mapping(restored.get('requirements'))
+        restored['inherited'] = role_entrypoints.normalize_inherited(restored.get('inherited'))
+        if 'effects' not in restored:
+            # Version 2 kept effects on the Result; unknown means possibly side-effectful.
+            legacy = getattr(restored.get('result'), 'legacy_fields', None) or {}
+            restored['effects'] = legacy.get('effects', 'possible')
+        contexts[name] = restored
+    session.contexts = contexts
     session.completed = {int(k): _decode(v, session.client) for k, v in state['completed'].items()}
+
+
+def _comparable(request, client):
+    """A request's meaning, independent of which encoding version stored it."""
+    data = {k: v for k, v in request.items() if k != 'encoding_version'}
+    data['requirements'] = role_entrypoints.requirements_mapping(_decode(request.get('requirements'), client))
+    data['inherited'] = role_entrypoints.normalize_inherited(_decode(request.get('inherited'), client))
+    producer = _decode(request.get('producer'), client)
+    data['producer'] = None if producer is None else {
+        'text': producer.text, 'provider': producer.provider, 'error': getattr(producer, 'error', None),
+        'group': role_entrypoints.result_group(producer), 'data': _encode(getattr(producer, 'data', None))}
+    return data
 
 
 class DurableWorkflow:
@@ -121,13 +170,12 @@ class DurableWorkflow:
         self.client = role_entrypoints._client(client)
         if not callable(getattr(self.client, 'Attempt', None)):
             raise ValueError('workflow_contract_unavailable:Attempt')
-        self.inherited = dict(inherited or {})
+        self.inherited = role_entrypoints.normalize_inherited(inherited)
         self.root = self.codex / 'claude-sync/workflows' / _hash(workflow_id)
 
-    def _failure(self, reason, *, uncertain=False):
-        return self.client.Result(error=reason, outcome=reason,
-                                  execution_started=None if uncertain else False,
-                                  effects='possible' if uncertain else 'none')
+    def _failure(self, reason):
+        """A falsy Result. 'workflow_outcome_uncertain' marks possible prior effects."""
+        return self.client.Result(error=reason)
 
     def read_legacy_result(self, request_id):
         """Explicit V1 compatibility: retrieve verified results without replay.
@@ -144,7 +192,7 @@ class DurableWorkflow:
             data = deepcopy(value['fields'])
             if kind == 'Result':
                 data['attempts'] = [result_contract(item, 'Attempt') for item in data.get('attempts', [])]
-            return getattr(self.client, kind)(**data)
+            return _construct(self.client, kind, data)
 
         with profile_locks(self.codex, self.skills):
             assert_plain_path(self.root)
@@ -158,14 +206,14 @@ class DurableWorkflow:
                 result_path = path.with_name(path.name.replace('.request.json', '.result.json'))
                 assert_plain_path(result_path)
                 if not result_path.exists():
-                    return self._failure('workflow_outcome_uncertain', uncertain=True)
+                    return self._failure('workflow_outcome_uncertain')
                 receipt = json.loads(result_path.read_text(encoding='utf-8'))
                 previous = receipt.get('receipt_hash')
                 if (receipt.get('request_hash') != _hash(saved) or previous !=
                     _hash({k: v for k, v in receipt.items() if k != 'receipt_hash'})):
                     raise ValueError('workflow_result_integrity_failed')
                 if receipt.get('state') != 'completed':
-                    return self._failure('workflow_outcome_uncertain', uncertain=True)
+                    return self._failure('workflow_outcome_uncertain')
                 if saved['request']['request_id'] == request_id:
                     if saved['request'].get('encoding_version') is not None:
                         return self._failure('legacy_record_required')
@@ -180,13 +228,12 @@ class DurableWorkflow:
         except ValueError as error:
             return self._failure(str(error))
         request = translated.pop('requirements')
-        requirements = self.client.ExecutionRequirements(**request) if request else None
         for field in ('exact_model', 'effort', 'cwd'):
             if options.get(field) is None and translated[field] is not None:
                 options[field] = translated[field]
         try:
             options['requirements'] = role_entrypoints._requirements(
-                self.client, request, options.get('requirements') or requirements, options.get('cwd'))
+                request, options.get('requirements') or request, options.get('cwd'))
         except (ValueError, TypeError) as error:
             return self._failure(str(error))
         return self.run(request_id, context='cli', operation='reply' if translated['resume'] else 'start',
@@ -200,21 +247,25 @@ class DurableWorkflow:
             return self._failure('explicit_request_id_required')
         if self.descriptor.get('status') != 'ready' or not overlays.validate(self.descriptor):
             return self._failure('overlay_unavailable_or_stale')
+        try:
+            requirements = role_entrypoints.requirements_mapping(requirements)
+        except (ValueError, TypeError) as error:
+            return self._failure(str(error))
         recipe = self.descriptor.get('recipe') or {}
         independent = recipe.get('kind') != 'cli_compat'
         if independent and mode == 'agent':
-            if requirements is None or requirements.access != 'read_only':
+            if requirements is None or requirements['access'] != 'read_only':
                 return self._failure('independent_repository_review_requires_read_only')
-        request = {'encoding_version': 2, 'request_id': request_id, 'workflow_id': self.workflow_id,
+        request = {'encoding_version': ENCODING_VERSION, 'request_id': request_id, 'workflow_id': self.workflow_id,
             'artifact_hash': self.descriptor['artifact_hash'], 'context': context,
             'operation': operation, 'prompt': prompt, 'inputs': _encode(inputs),
             'producer': _contract(producer, 'Result'), 'mode': mode,
             'exact_model': exact_model, 'effort': effort,
-            'requirements': _contract(requirements, 'ExecutionRequirements'), 'cwd': str(cwd) if cwd else None,
+            'requirements': _encode(requirements), 'cwd': str(cwd) if cwd else None,
             'inherited': _encode(self.inherited), 'compatibility': compatibility,
             'environment_digest': _hash(env) if env is not None else None,
             'workspace_request': {'cwd': str(cwd) if cwd is not None else None,
-                'workspace': requirements.workspace if requirements is not None else None,
+                'workspace': requirements['workspace'] if requirements is not None else None,
                 'allow_change': allow_workspace_change}}
         ensure_external(self.root)
         assert_plain_path(self.root)
@@ -232,7 +283,7 @@ class DurableWorkflow:
                 if (saved.get('sequence') != index or saved.get('previous') != prior_hash
                     or saved.get('request', {}).get('artifact_hash') != self.descriptor['artifact_hash']):
                     raise ValueError('workflow_history_integrity_failed')
-                if saved['request'].get('encoding_version') != 2:
+                if saved['request'].get('encoding_version') not in READABLE_ENCODINGS:
                     # V1 overloaded ordinary JSON with contract tags and did not
                     # pin a caller cwd. Keep those immutable records readable as
                     # evidence, but require explicit migration before execution.
@@ -253,11 +304,11 @@ class DurableWorkflow:
                     pending = True
                 if saved['request']['request_id'] == request_id:
                     if receipt is None or receipt['state'] != 'completed':
-                        return self._failure('workflow_outcome_uncertain', uncertain=True)
+                        return self._failure('workflow_outcome_uncertain')
                     replay = (saved, receipt)
                     break
                 if pending:
-                    return self._failure('workflow_outcome_uncertain', uncertain=True)
+                    return self._failure('workflow_outcome_uncertain')
             previous = session.contexts.get(context)
             if replay is not None:
                 # Idempotent retrieval uses the original absolute anchor, even
@@ -266,7 +317,8 @@ class DurableWorkflow:
                 if request['workspace_request'] != replay[0]['request']['workspace_request']:
                     return self._failure('request_id_reused_with_different_input')
                 cwd = previous['cwd']
-                requirements = _decode(replay[0]['request']['requirements'], self.client)
+                requirements = role_entrypoints.requirements_mapping(
+                    _decode(replay[0]['request']['requirements'], self.client))
             try:
                 requirements, cwd = role_entrypoints.anchor_workspace(
                     self.client, requirements, cwd, env, previous=previous,
@@ -274,9 +326,9 @@ class DurableWorkflow:
             except (ValueError, TypeError) as error:
                 return self._failure(str(error))
             request['cwd'] = cwd
-            request['requirements'] = _contract(requirements, 'ExecutionRequirements')
+            request['requirements'] = _encode(requirements)
             if replay is not None:
-                if replay[0]['request'] != request:
+                if _comparable(replay[0]['request'], self.client) != _comparable(request, self.client):
                     return self._failure('request_id_reused_with_different_input')
                 return _decode(replay[1]['result'], self.client)
             # Validate ordering before recording intent; invalid continuation is
@@ -297,7 +349,8 @@ class DurableWorkflow:
                     exact_model=exact_model, effort=effort, requirements=requirements,
                     cwd=cwd, env=env, cancel=cancel, timeout=timeout,
                     allow_workspace_change=allow_workspace_change)
-                uncertain = result.effects != 'none' and (not result or result.outcome != 'success')
+                # A failed call that may have started an agent leaves its effects unknown.
+                uncertain = not result and session.last_effects == "possible"
                 receipt = {'request_hash': _hash(saved), 'state': 'uncertain' if uncertain else 'completed',
                            'result': _contract(result, 'Result'), 'session': _session(session)}
             except BaseException:

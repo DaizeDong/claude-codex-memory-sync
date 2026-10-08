@@ -98,9 +98,12 @@ def test_workflow_context_writer_refuses_before_dispatch(stale, monkeypatch):
     contracts = make_workflow_client_contracts()
     class NoDispatch:
         Result, Attempt = contracts.Result, contracts.Attempt
-        ModelSelection = contracts.ModelSelection
-        ExecutionRequirements = contracts.ExecutionRequirements
+        rung_group = staticmethod(contracts.rung_group)
+        model_group = staticmethod(contracts.model_group)
         process = contracts.process
+
+        def active_chain(self):
+            return ('codex',)
 
         def call(self, *args, **kwargs):
             pytest.fail('dispatch under incomplete restore')
