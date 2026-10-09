@@ -58,9 +58,9 @@ python -m pip install -r requirements-dev.txt
 
 控制字符**只在归档副本中**转成 `\u0008` 等可见转义，报告记录字符编码和位置，源文件保持不变。明确的 API key 文档占位模板可以保留，真实凭据匹配仍会拦截。
 
-每次运行都重新计算内容哈希。新安装和默认调用只维护归档；存在 `instructions.md` 仅表示投递入口可用，不代表用户已经授权。使用 `--request-id` 和 `--scope` 明确选择投递请求，`--periodic` 保存已批准的周期授权。
+每次运行都重新计算内容哈希。新安装和默认调用只维护归档；存在 `instructions.md` 仅表示投递入口可用，不代表用户已经授权。使用 `--request-id` 和 `--scope` 明确选择投递请求，`--periodic` 保存已批准的周期授权。现有周期授权可通过文档中的授权 API 迁移，无需修改调度任务。
 
-投递通过持久 outbox 记录增量及其前序，重复出现的 A 到 B 变化也各有记录。中断后无法证明是否成功的投递标为 `delivery_unknown`，不会自动重发；已存在的 note 和用户修改都会保留。授权、持久化及恢复限制见[记忆 outbox 说明](docs/MEMORY_OUTBOX.md)。Codex 原生记忆整理是独立的异步过程；暂存成功不代表原生记忆已经整合，也不保证某条事实会被召回。
+投递通过持久 outbox 记录增量及其前序，重复出现的 A 到 B 变化也各有记录。中断后无法证明是否成功的投递标为 `delivery_unknown`，不会自动重发；note 通过操作系统的禁止替换发布方式创建，已存在的 note 和用户修改都会保留。授权、持久化及恢复限制见[记忆 outbox 说明](docs/MEMORY_OUTBOX.md)。Codex 原生记忆整理是独立的异步过程；暂存成功不代表原生记忆已经整合，也不保证某条事实会被召回。
 
 当前索引定义有效来源快照。源文件被删除或排除后，归档计划会将确认归属且未被修改的旧副本移入现有私有同步备份，退出日常检索目录。未确认归属的历史副本需要按准确哈希审阅；用户编辑会保留并报告。归属记录沿用现有 memory outbox，事务接入和回滚约定见[归档清理说明](docs/MEMORY_ARCHIVE_HYGIENE.md)。同步不会改写原生 `MEMORY.md`、记忆摘要、rollout evidence 或 SQLite 文件。
 
@@ -72,11 +72,11 @@ python -m pip install -r requirements-dev.txt
 .\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json
 ```
 
-使用应用结果中给出的实际备份路径。回滚只恢复当前状态仍与该次写入一致的文件或链接，保留同步后的手动编辑。追加的记忆 note 会保留，因为删除文件不能可靠撤回 Codex 已经处理的记忆。真实配置数据和备份必须位于本仓库之外。
-
-### 计划运行与健康检查
+使用应用结果中给出的实际备份路径。回滚只恢复当前状态仍与该次写入一致的文件或链接，保留同步后的手动编辑。outbox 历史、准备证据、授权记录和追加的记忆 note 会保留，因为删除文件不能可靠撤回 Codex 已经处理的记忆。真实配置数据和备份必须位于本仓库之外。
 
 插件被明确停用或源文件删除后，只清理本工具管理且未被手动修改的内容。手动编辑和暂时不可用的源安装目录会保留并报告。清理操作同样有备份和回滚，原生记忆 note 仍只追加。
+
+### 来源盘点与链接资源
 
 JSON 的 `inventory` 包含入口路径、归属、来源仓库与版本、依赖声明和解释器是否存在，并列出断链恢复候选。盘点不会执行依赖脚本。只有已批准仓库中存在唯一对应来源的旧链接才会被修复：
 
@@ -86,6 +86,20 @@ JSON 的 `inventory` 包含入口路径、归属、来源仓库与版本、依�
 ```
 
 多个候选无法区分时保持原样。可以用 `--external-skill-manifest` 指定已有来源仓库清单，或设置 `CLAUDE_CONFIG_REPO`，指向包含 `external-skill-repos.json` 的配置目录；未配置时不会猜测私人仓库位置。原生角色文件和配置入口分别记录受管哈希；审阅角色的只读要求属于行为指令，运行权限仍由 Codex 当前配置决定。
+
+链接技能的相对资源须从规范源入口解析，使用 inventory 的 `resource_context.canonical_entrypoint` 和 `resource_context.source_root`。转发包装指向已验证的上游文件，overlay 指向其受管 payload；包装、描述符或入口内容改变时，资源上下文不可用。兄弟目录资源可能需要明确批准的包根。请在已安装 `profile-sync` 的 Python 环境运行：
+
+```powershell
+python -m profile_bridge.resources --entrypoint C:\skills\example\SKILL.md --source-root C:\src\example-package --reference ../../shared-references/rules.md
+```
+
+成功时输出规范文件路径 JSON 并退出 `0`；文件缺失、绝对或远程引用、以及通过 `..` 或链接越出所选根的路径返回原因并退出 `2`。该命令不读取工作流正文、不执行资源、不改变配置；不能为通过失败检查而扩大根目录。
+
+受管指令要求核对实际宿主能力：Claude 工具和 Cowork 动作需要宿主支持，安装成功不能证明可调用；指定人格的写作技能需要用户明确意图。原始技能的 YAML frontmatter 必须含唯一映射键及非空字符串名称、描述。适配器从解析后的标量生成描述，保留比较条件和内联触发语，示例正文仍留在源工作流。Inventory 保留 catalog 源哈希和插件版本；Git 来源不可用时如实报告。
+
+运行时选择按 selection snapshot 中的哈希验证所选替代项的每个生成文件，包括指令、描述符和 payload。缺失或修改会阻止选择并保留文件。旧快照若无文件哈希，需要先通过正常 profile plan 重新生成。
+
+### 计划运行与健康检查
 
 现有任务调度器可以调用确定性入口：
 
@@ -129,17 +143,13 @@ python -m pytest tests/test_llmcall_wheel_integration.py -q -ra
 
 下文继续介绍 **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**。它是原有单项目入口，其筛选方式、输出和凭据整批拦截规则，与上面的完整配置归档不同。
 
-**暂存可验证的记忆更新，不假装两个 Agent 共享同一颗脑。**
+单项目记忆桥使用本机检测到的 ingress 约定连接现有记忆系统，遵循三条原则：
 
-这个工具有意保持小而简单。它遵循三条原则：
+1. 将 Claude 项目记忆转换为入口接受的 note 格式，保持基础设施简单。
+2. 在 `extensions\ad_hoc\notes\` 暂存自包含 note，由 Codex 负责整理；暂存成功不保证已经整合或将被召回。
+3. 保守筛选，先预览，阻止疑似凭据，限制输入并增量去重。增加源文本本身不能证明召回质量提高。
 
-1. **只填补缺失的接口，不增加新的 Agent 交互面。** Claude Code 已经保存项目记忆，Codex 也已经负责自己的记忆整理；本工具只把一种表示转换为本机检测到的入口约定所接受的格式。它不增加 Agent 终端、daemon、MCP server、数据库、向量库或模型调用。
-2. **通过本机检测到的入口约定暂存，不伪装成 Codex 内部组件。** 脚本只向 `extensions\ad_hoc\notes\` 追加自包含 note，不改写 Codex 的记忆摘要、rollout evidence 或 SQLite 状态。“同步成功”只表示“已安全暂存”，不表示“已经整理或保证会被召回”。
-3. **记忆质量比记忆数量更重要。** 先 dry run、保守筛选、发现疑似凭据时 fail closed、限制所有输入规模，并进行增量去重。把所有日志和过期决策都复制过去，只会让记忆池更大，甚至可能让召回质量更差。
-
-设计目标是成为两个现有记忆系统之间最小、可审计的桥，而不是通用共享记忆平台。
-
-## 它是什么（以及不是什么）
+### 它是什么（以及不是什么）
 
 `claude-codex-memory-sync` 是面向 Windows PowerShell 5.1 的轻量、本地、单向转换器。它读取 Claude Code 的项目自动记忆 Markdown，执行路径与凭据检查，再把符合条件的内容暂存为 Codex `ad_hoc` note。
 
@@ -162,7 +172,7 @@ Codex memory consolidation
 - 把两套原生记忆变成强一致数据库；
 - 保证 Codex 会在何时、以何种方式或是否召回某条暂存内容。
 
-## 安装
+### 安装
 
 运行要求：
 
@@ -181,7 +191,7 @@ git submodule update --init --recursive
 python -m pip install -r requirements-dev.txt
 ```
 
-## 快速开始
+### 快速开始
 
 第一次先做零写入预览：
 
@@ -205,7 +215,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-me
 
 包装器使用的 `-ExecutionPolicy Bypass` 只作用于这一次 PowerShell 进程，不会修改系统或用户的持久执行策略。`sync-memory.cmd` 会原样透传参数和脚本退出码。
 
-## 工作方式
+### 工作方式
 
 默认 Codex memories 根目录依次为：
 
@@ -218,7 +228,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-me
 
 “已暂存”也不等于“已整理”。Codex 会按自己的节奏异步处理 ingress note。
 
-## 路径发现与显式覆盖
+### 路径发现与显式覆盖
 
 默认值：
 
@@ -248,7 +258,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-me
 
 `ClaudeProjectKey` 与 `ClaudeMemoryPath` 是互斥的来源模式。`ClaudeMemoryPath` 只覆盖来源目录；项目身份仍来自 Git 根目录或 `ProjectPath`。参数或路径无效时，脚本以退出码 `1` 结束。
 
-## 参数
+### 参数
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
@@ -284,7 +294,7 @@ JSON 预览示例：
 
 正常结果和预检安全阻断会使用完整 JSON schema：`tool`、`version`、`status`、`dry_run`、`project_id`、`selected_files`、`selected_bytes`、`added`、`updated`、`unchanged`、`blocked`、`notes_written`、`partial_write`、`blocked_items`、`consolidation` 和 `deletes_propagated`。参数绑定成功后由脚本捕获的运行时失败，包括只在最终 note envelope 构造完成后发现的安全拒绝，会使用字段较少的 `status: "error"` schema：`tool`、`version`、`status`、`message`、`notes_written`、`partial_write` 和 `consolidation`。PowerShell 启动、解析和参数绑定错误发生在脚本 formatter 之前，可能输出原生 stderr 而不是 JSON。应始终以进程退出码为准。
 
-## 默认筛选与安全模型
+### 默认筛选与安全模型
 
 默认选择 Claude memory 根目录的直接 `*.md` 子级，不递归，并按大小写不敏感的精确文件名匹配排除 `README.md`。`-IncludeArchive` 会额外选择 `memory\archive\*.md` 的直接子级。reparse point、UNC/device/alternate-data-stream 路径、无法安全解析的路径和非普通文件不会被视为可信来源。
 
@@ -301,7 +311,7 @@ JSON 预览示例：
 
 为了保留作用域，note 会保存项目绝对路径。因此，路径中的用户名、客户名和目录结构也会成为记忆内容。如果路径本身敏感，请使用中性项目路径，并在需要时通过 `-ClaudeMemoryPath` 显式定位来源。
 
-## 增量语义与信任边界
+### 增量语义与信任边界
 
 重复运行会比较来源身份和内容状态，不会再次暂存未变化的内容。来源变化时会追加新的 update note，而不会原地修改旧 note。`no_changes` 属于成功结果。
 
@@ -320,7 +330,7 @@ JSON 预览示例：
 
 必须稳定执行的项目规则应放在 `AGENTS.md` 或仓库文档中。记忆应作为辅助召回层，而不是唯一事实来源。
 
-## 退出码
+### 退出码
 
 | 退出码 | 含义 |
 |---:|---|
@@ -342,7 +352,7 @@ exit /b %SYNC_CODE%
 
 Dry run 不执行写入，但仍会验证来源、ingress 约定、安全规则和现有历史，因此也可能返回 `1` 或 `2`。
 
-## 验证与测试
+### 验证与测试
 
 在仓库根目录运行完整黑盒测试：
 
@@ -362,7 +372,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 `-DryRun` 不创建 notes 目录，也不写 staging note，但仍会验证真实目标中的 `extensions\ad_hoc\instructions.md`。不要把 `CodexMemoriesRoot` 指向一个没有该入口约定的空临时目录；隔离测试请使用随附的黑盒测试套件。
 
-## 局限
+### 局限
 
 - 当前版本只支持 Windows 上的 Windows PowerShell 5.1。PowerShell 7 和其他操作系统不是已测试目标。
 - `extensions\ad_hoc\instructions.md` 是从本机 Codex 安装中检测到的约定，不是公开保证稳定的 API。如果该文件缺失，或未来 Codex 变更使约定失效，工具会 fail closed 并以退出码 `1` 结束，且可能需要更新。

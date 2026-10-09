@@ -75,9 +75,9 @@ Each applying run with changes stores its manifest, original file contents, and 
 
 Use the backup path reported by the applying run. Rollback restores files and links only when their current state still matches what that run wrote; later user edits are preserved. Outbox history, prepared evidence, authorization records, and appended memory notes are retained because removing a file cannot reliably retract memory already processed by Codex. Live profile data and backups must remain outside this repository.
 
-### Scheduled runs and health
-
 Explicitly disabled plugins and removed source items retire only intact artifacts owned by this bridge. User edits and unavailable source installations are preserved and reported. Retirement is covered by the same backup/rollback mechanism; native memory notes remain append-only.
+
+### Inventory and linked resources
 
 The JSON report includes `inventory`: entry-point paths, ownership, local repository identity/version, dependency declarations and interpreter presence, plus broken-link recovery candidates. Dependency scripts are never executed during inventory. To repair only uniquely identified legacy links from approved repositories:
 
@@ -99,6 +99,8 @@ The command prints the existing canonical file path as JSON and exits `0`. Missi
 The managed instruction block also explains host capability checks and writing-skill scope. Claude-specific tools and Cowork actions require actual host support; installation alone establishes no runtime capability. Named-persona writing requires explicit persona intent. Raw skills must have valid YAML frontmatter with unique mapping keys and nonempty string names and descriptions before installation is planned. Adapter descriptions use parsed source scalars, preserving comparison conditions and inline trigger text while example sections remain in the source workflow. Inventory preserves catalog source hashes and plugin versions, and reports unavailable git provenance without inventing an upstream revision.
 
 Runtime selection verifies every declared generated member of the selected alternative, including its installed instructions, descriptor and payload, against hashes stored in the selection snapshot. Missing or changed members block that alternative and preserve the files. An older selection snapshot without member hashes must be regenerated through the normal profile plan before it can select an alternative.
+
+### Scheduled runs and health
 
 `run_profile_sync.py` is the deterministic entry point for an existing scheduler:
 
@@ -160,17 +162,18 @@ client supports those contracts.
 
 The remaining sections describe **`sync-memory.cmd` / `sync-claude-memory-to-codex.ps1`**, the original single-project entry. Its selection, output, and all-or-nothing credential rules differ from the full profile archive described above.
 
-**Stage verifiable memory updates; never pretend the two agents share a brain.**
+The memory-only bridge uses the detected local ingress contract between two
+existing memory systems. Three principles define its scope:
 
-This tool is intentionally small. Its design follows three principles:
+1. Convert existing Claude project memory into the accepted note format with
+   minimal additional infrastructure.
+2. Stage self-contained notes under `extensions\ad_hoc\notes\`. Codex owns
+   consolidation; successful staging does not guarantee consolidation or recall.
+3. Select conservatively, preview before writing, block likely credentials,
+   bound inputs and deduplicate changes. More source text does not by itself
+   establish better recall.
 
-1. **Fill the seam, do not add another agent surface.** Claude Code already stores project memory, and Codex already owns its memory consolidation. This tool only converts one representation into the format accepted by the detected local ingress contract. It adds no agent terminal, daemon, MCP server, database, vector store, or model call.
-2. **Stage through the detected local contract, do not impersonate Codex internals.** The script appends self-contained notes under `extensions\ad_hoc\notes\`. It never rewrites Codex memory summaries, rollout evidence, or SQLite state. A successful sync means “safely staged,” not “already consolidated or guaranteed to be recalled.”
-3. **Memory quality matters more than memory volume.** Dry-run first, select conservatively, fail closed on likely credentials, bound every input, and deduplicate incrementally. Copying every log and stale decision would make the pool larger while potentially making recall worse.
-
-The design target is the smallest auditable bridge between two existing memory systems, not a universal shared-memory platform.
-
-## What it is (and isn't)
+### What it is (and isn't)
 
 `claude-codex-memory-sync` is a lightweight, local, one-way converter for Windows PowerShell 5.1. It reads Claude Code project auto-memory Markdown, applies path and credential checks, and stages eligible content as Codex `ad_hoc` notes.
 
@@ -193,7 +196,7 @@ It does not:
 - turn the two native memory systems into a strongly consistent database;
 - guarantee when, how, or whether Codex will recall a staged item.
 
-## Install
+### Install
 
 Requirements:
 
@@ -212,7 +215,7 @@ git submodule update --init --recursive
 python -m pip install -r requirements-dev.txt
 ```
 
-## Quick start
+### Quick start
 
 Run the first sync as a zero-write preview:
 
@@ -236,7 +239,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-me
 
 The wrapper's `-ExecutionPolicy Bypass` applies only to that PowerShell process. It does not change the persistent system or user execution policy. `sync-memory.cmd` forwards both arguments and the script's exit code.
 
-## How it works
+### How it works
 
 The default Codex memories root is:
 
@@ -249,7 +252,7 @@ Sync is one-way and append/update oriented. Deleting or renaming a Claude source
 
 “Staged” also does not mean “consolidated.” Codex processes ingress notes asynchronously on its own schedule.
 
-## Path discovery and explicit overrides
+### Path discovery and explicit overrides
 
 Defaults:
 
@@ -279,7 +282,7 @@ Or specify both the Claude memory directory and Codex memories root directly:
 
 `ClaudeProjectKey` and `ClaudeMemoryPath` are mutually exclusive source modes. `ClaudeMemoryPath` overrides only the source directory; project identity still comes from the Git root or `ProjectPath`. Invalid parameters or paths exit with code `1`.
 
-## Parameters
+### Parameters
 
 | Parameter | Default | Meaning |
 |---|---:|---|
@@ -315,7 +318,7 @@ JSON preview example:
 
 Normal results and preflight safety blocks use the full JSON schema: `tool`, `version`, `status`, `dry_run`, `project_id`, `selected_files`, `selected_bytes`, `added`, `updated`, `unchanged`, `blocked`, `notes_written`, `partial_write`, `blocked_items`, `consolidation`, and `deletes_propagated`. Runtime failures caught after successful parameter binding, including a safety rejection found only after the final note envelope is built, use the smaller `status: "error"` schema: `tool`, `version`, `status`, `message`, `notes_written`, `partial_write`, and `consolidation`. PowerShell startup, parsing, and parameter-binding failures occur before the script's formatter and may produce native stderr instead of JSON. Treat the process exit code as authoritative.
 
-## Selection and safety model
+### Selection and safety model
 
 By default, the tool selects direct `*.md` children of the Claude memory root without recursion and excludes a case-insensitive exact filename match for `README.md`. `-IncludeArchive` additionally selects direct `memory\archive\*.md` children. Reparse points, UNC/device/alternate-data-stream paths, paths that cannot be resolved safely, and nonregular files are not trusted as sources.
 
@@ -332,7 +335,7 @@ Imported Claude text is wrapped as quoted, untrusted data and is explicitly mark
 
 Notes retain the absolute project path to preserve scope. Usernames, customer names, and directory structure inside that path therefore become memory content. If the path itself is sensitive, use a neutral project location and, when needed, point `-ClaudeMemoryPath` to the source explicitly.
 
-## Incremental semantics and trust boundary
+### Incremental semantics and trust boundary
 
 Repeated runs compare source identity and content state, so unchanged content is not staged again. A changed source appends a new update note; it never edits the old note in place. `no_changes` is a successful result.
 
@@ -351,7 +354,7 @@ This is not an equivalent conversion between Claude and Codex native memory. Cod
 
 Keep stable, mandatory project rules in `AGENTS.md` or repository documentation. Use memory as an auxiliary recall layer, not as the only source of truth.
 
-## Exit codes
+### Exit codes
 
 | Code | Meaning |
 |---:|---|
@@ -373,7 +376,7 @@ For nontrivial automation, prefer parsing the JSON object.
 
 Dry run performs no writes, but it still validates the source, ingress contract, safety rules, and existing history. It can therefore return `1` or `2`.
 
-## Verification and tests
+### Verification and tests
 
 Run the complete black-box suite from the repository root:
 
@@ -393,7 +396,7 @@ Then preview the real local configuration without writing:
 
 `-DryRun` neither creates the notes directory nor writes staging notes, but it still validates the real target's `extensions\ad_hoc\instructions.md`. Do not point `CodexMemoriesRoot` at an empty temporary directory without that ingress contract; use the bundled black-box suite for isolated tests.
 
-## Limitations
+### Limitations
 
 - This release supports Windows PowerShell 5.1 on Windows. PowerShell 7 and other operating systems are not tested targets.
 - `extensions\ad_hoc\instructions.md` is a contract detected in the local Codex installation, not a publicly guaranteed stable API. If it is absent or a future Codex change invalidates it, the tool fails closed with exit code `1` and may need an update.

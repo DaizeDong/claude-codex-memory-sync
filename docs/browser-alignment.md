@@ -57,14 +57,17 @@ Its shared timestamps are a reminder, not proof that a particular session saved
 its state. Stop jobs run `absorb` before the reminder even if source groups are
 reordered. Child output remains suppressed.
 
-## Hook protocol and integration
+## Explicit checks and earlier hook integration
 
-`plan_hooks(..., plugin_roots=enabled_plugin_roots)` retains the existing owned
-Stop bridge and adds `report["entrypoint_checks"]`. It does not register extra
-events. The available local app-server schema lists `SessionStart` and
+The original Stop-only integration used
+`plan_hooks(..., plugin_roots=enabled_plugin_roots)` to retain the owned Stop
+bridge and add `report["entrypoint_checks"]`. It does not register extra
+events. That review found the local app-server schema listed `SessionStart` and
 `PostToolUse`, but does not define their stdin payloads or prove the additional
 context response shape. Event names alone are insufficient to register the
-Claude adapters as equivalent native behavior.
+Claude adapters as equivalent native behavior. The subsequent exact-release
+implementation and its remaining invocation limits are documented in
+[native hook alignment](native-hooks-alignment.md).
 
 `plan_entrypoint_checks(claude_home, codex_home, plugin_roots=())` also exposes
 these descriptors independently. They are observations, not automatic checks.
