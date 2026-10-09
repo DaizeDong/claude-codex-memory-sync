@@ -109,6 +109,20 @@ def _markers(data):
     return sorted(matches, key=lambda m: m.start())
 
 
+def _carries_markers(data):
+    """True when the original bytes hold at least one well-formed, intact ownership marker.
+
+    Verification checks the markers of every artifact file whatever its name (a routed alternative is
+    alternatives/<x>/ENTRYPOINT.md with an adapter marker), so the remap must re-hash those markers too
+    after a path mapping rewrites their bodies. Files whose markers do not verify are left to the
+    ordinary conflict path, never repaired here.
+    """
+    try:
+        return bool(_markers(data))
+    except (OwnershipConflict, ValueError, UnicodeError):
+        return False
+
+
 def _marker_spans(matches):
     kinds = {BLOCK: "config", INSTRUCTION: "instruction", ADAPTER: "adapter", ROLE: "role"}
     spans = []
@@ -470,7 +484,7 @@ def remap_members(original, changed, *, home=None, links=None, path_mapping=None
         if path in invalid:
             result[path] = _invalidate(data, manifest, path.endswith("/managed-skills.json"))
             continue
-        if not _marker_document(path):
+        if not (_marker_document(path) or _carries_markers(original[path])):
             continue
         old = _markers(original[path])
         new = [m for pattern in PATTERNS for m in pattern.finditer(data)]

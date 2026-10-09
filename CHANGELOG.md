@@ -15,6 +15,11 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Fixed
 
+- Cross-home remapping re-hashes intact ownership markers in every artifact file,
+  not only `AGENTS.md`, `SKILL.md` and `*.toml`. Verification already checks the
+  markers of routed alternatives (`alternatives/<name>/ENTRYPOINT.md`), so a
+  home mapping that rewrote their bodies left a stale adapter hash and refused
+  the whole artifact group. Markers that did not verify are still not repaired.
 - Public tests use generated llmcall 0.3.1 contracts instead of installing an
   unrelated same-named PyPI package. An opt-in codec test requires a reviewed
   0.3.1 wheel and matching installation provenance; CI reports `NOT_RUN` when
