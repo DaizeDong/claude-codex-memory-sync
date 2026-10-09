@@ -1,7 +1,8 @@
 """Archive ownership and retirement hooks for the existing profile transaction.
 
 Ownership is hash-only metadata in the memory outbox, prepared by its existing
-writer. Retired bytes live in the profile backup, never in the searchable import.
+writer. Retired bytes are held in the run's rollback copy, which is removed when
+the run ends, and never in the searchable import.
 This module does not own a journal, lock, backup store, or history writer.
 """
 from copy import deepcopy

@@ -101,12 +101,13 @@ def test_retirement_rejects_changed_complete_dependency_before_any_write(tmp_pat
             row.pop('overlay_dependencies', None)
     before_config = (codex / 'config.toml').read_bytes()
     before_roles = {p.name: p.read_bytes() for p in (codex / 'claude-sync/agents').glob('*.toml')}
-    backups = set((codex / 'claude-sync/backups').iterdir())
+    root = codex / 'claude-sync/backups'
+    backups = set(root.iterdir()) if root.exists() else set()
     with pytest.raises(ValueError, match='[Oo]verlay'):
         sync.apply_plan(changes, report, codex, shared)
     assert (codex / 'config.toml').read_bytes() == before_config
     assert {p.name: p.read_bytes() for p in (codex / 'claude-sync/agents').glob('*.toml')} == before_roles
-    assert set((codex / 'claude-sync/backups').iterdir()) == backups
+    assert (set(root.iterdir()) if root.exists() else set()) == backups
 
 
 @pytest.mark.parametrize('ordinary_list', [False, True])

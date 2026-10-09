@@ -13,9 +13,9 @@ is in [CHANGELOG.md](CHANGELOG.md).
   roles, the managed `AGENTS.md` block, a project-document fallback, compatible MCP
   definitions, project memory archives, and reviewed SessionStart, PostToolUse
   and Stop hook adapters with unsupported commands reported.
-- Three modes on every run: preview, JSON preview, and apply behind a local backup.
-- Backup and rollback per applying run, restoring only the files and links whose current
-  state still matches what that run wrote.
+- Three modes on every run: preview, JSON preview, and apply behind a rollback copy.
+- Rollback per applying run, restoring only the files and links whose current state still
+  matches what that run wrote; the rollback copy is removed when the run ends.
 - Retirement of artifacts this bridge owns when a plugin is disabled or a source item
   disappears, with user edits preserved.
 - An inventory and link-repair path for uniquely identified legacy links from approved
