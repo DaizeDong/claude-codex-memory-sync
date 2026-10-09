@@ -119,7 +119,14 @@ def _approved_job(command: str, source_home: Path, timeout: object, *, event="St
             return None, "script_not_in_source_scripts_directory"
         if not script.is_file() or not executable.is_file():
             return None, "reviewed_script_or_python_missing"
-        source_hash = _digest(script.read_bytes())
+        source_bytes = script.read_bytes()
+        source_hash = _digest(source_bytes)
+        dependencies = []
+        if b"pw_storage_paths" in source_bytes:
+            dependency = script.with_name("pw_storage_paths.py")
+            if not dependency.is_file():
+                return None, "reviewed_script_dependency_missing"
+            dependencies.append({"source": str(dependency), "source_sha256": _digest(dependency.read_bytes())})
     except OSError:
         return None, "reviewed_script_or_python_unreadable"
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= 120:
@@ -129,6 +136,7 @@ def _approved_job(command: str, source_home: Path, timeout: object, *, event="St
         "argv": [str(executable.resolve()), str(script.resolve()), *argv[2:]],
         "timeout": timeout,
         "source_sha256": source_hash,
+        **({"dependencies": dependencies} if dependencies else {}),
     }, "reviewed_local_stop_command"
 
 
@@ -167,7 +175,7 @@ def plan_entrypoint_checks(claude_home: Path, codex_home: Path, plugin_roots=())
                 job, reason = _approved_job(entry.get("command"), claude_home, entry.get("timeout", 30), event=event)
                 if job is None:
                     unavailable = reason in {"python_executable_missing", "reviewed_script_or_python_missing",
-                                             "reviewed_script_or_python_unreadable", "invalid_or_excessive_timeout"}
+                                             "reviewed_script_or_python_unreadable", "reviewed_script_dependency_missing", "invalid_or_excessive_timeout"}
                     checks.append({"event": event, "status": "unavailable" if unavailable else "unsupported", "reason": reason})
                     continue
                 job.update(event=event, status="entrypoint_available", registered=False,
@@ -179,7 +187,7 @@ def plan_entrypoint_checks(claude_home: Path, codex_home: Path, plugin_roots=())
                     if b'"pw-auth.py"' in source or b"'pw-auth.py'" in source:
                         dependency = Path(job["argv"][1]).with_name("pw-auth.py")
                         try:
-                            job["dependencies"] = [{"source": str(dependency), "source_sha256": _digest(dependency.read_bytes())}]
+                            job.setdefault("dependencies", []).append({"source": str(dependency), "source_sha256": _digest(dependency.read_bytes())})
                         except OSError:
                             job.update(status="unavailable", reason="source_guard_dependency_missing")
                     job["argv"].extend(["--check-codex-config", str(codex_home / "config.toml")])
@@ -325,7 +333,7 @@ def plan_hooks(claude_home: Path, codex_home: Path, *, plugin_roots=()) -> tuple
                 job, reason = _approved_job(entry.get("command"), claude_home, entry.get("timeout", 30))
                 row["reason"] = reason
                 if job is None:
-                    if reason in {"python_executable_missing", "reviewed_script_or_python_missing", "reviewed_script_or_python_unreadable"}:
+                    if reason in {"python_executable_missing", "reviewed_script_or_python_missing", "reviewed_script_or_python_unreadable", "reviewed_script_dependency_missing"}:
                         row["status"] = "unavailable"
                         unavailable = True
                     continue

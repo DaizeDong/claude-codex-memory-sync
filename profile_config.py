@@ -463,13 +463,23 @@ def _align_playwright(text, spec, claude_home, identity, newline, members, adopt
         _, policy = _browser_options(_playwright_argv(spec))
         if set(policy) != set(_BROWSER_FLAGS):
             raise ValueError("playwright_source_policy_incomplete")
-        shared = claude_home.parent / ".pw-auth/shared.json"
-        if Path(policy["--storage-state"]).resolve() != shared.resolve():
+        settings = json.loads((claude_home / "settings.json").read_text(encoding="utf-8-sig"))
+        env = settings.get("env", {}) if isinstance(settings, dict) else {}
+        if not isinstance(env, dict) or any(not isinstance(env.get(key), str) or not env[key]
+                                           for key in ("PW_AUTH_CONFIG", "PW_MCP_OUTPUT_DIR")):
+            raise ValueError("playwright_storage_paths_not_configured")
+        auth_root, output_root = (Path(env[key]).expanduser()
+                                  for key in ("PW_AUTH_CONFIG", "PW_MCP_OUTPUT_DIR"))
+        if not auth_root.is_absolute() or not output_root.is_absolute():
+            raise ValueError("playwright_storage_paths_must_be_absolute")
+        shared = auth_root / "shared.json"
+        selected_state = Path(policy["--storage-state"])
+        if not selected_state.is_absolute() or selected_state.resolve() != shared.resolve():
             raise ValueError("playwright_source_must_use_shared_union")
         if not shared.is_file():
             raise ValueError("playwright_shared_union_missing; initialize_with_pw_auth")
         output = Path(policy["--output-dir"])
-        if not output.is_absolute() or output.resolve() != (claude_home.parent / ".playwright-mcp-output").resolve():
+        if not output.is_absolute() or output.resolve() != output_root.resolve():
             raise ValueError("playwright_source_output_directory_not_reviewed")
         expected = _parse(text)
         native = expected["mcp_servers"]["playwright"]

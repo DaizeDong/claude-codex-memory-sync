@@ -30,10 +30,11 @@ def put_json(path, data):
 def browser_home(tmp_path):
     home = tmp_path / "synthetic home"
     claude, codex, plugin = home / ".claude", home / ".codex", home / "plugin"
-    put_json(claude / "settings.json", {})
-    put_json(home / ".pw-auth/shared.json", {"cookies": [], "origins": []})
+    put_json(claude / "settings.json", {"env": {"PW_AUTH_CONFIG": str(home / "private-browser"),
+                                            "PW_MCP_OUTPUT_DIR": str(home / "browser-output")}})
+    put_json(home / "private-browser/shared.json", {"cookies": [], "origins": []})
     spec = {"command": "npx", "args": ["@playwright/mcp@latest", "--isolated", "--storage-state",
-            str(home / ".pw-auth/shared.json"), "--output-dir", str(home / ".playwright-mcp-output")]}
+            str(home / "private-browser/shared.json"), "--output-dir", str(home / "browser-output")]}
     put_json(plugin / ".mcp.json", {"playwright": spec})
     original = (b'project_doc_fallback_filenames = ["CLAUDE.md"]\n'
                 b'model = "synthetic"\n'
@@ -50,6 +51,20 @@ def browser_home(tmp_path):
 
 def parsed(data):
     return tomllib.loads(data.decode("utf-8-sig"))
+
+
+@pytest.mark.parametrize("key,value", [("PW_AUTH_CONFIG", None), ("PW_MCP_OUTPUT_DIR", None),
+                                     ("PW_AUTH_CONFIG", "relative"), ("PW_MCP_OUTPUT_DIR", "relative")])
+def test_storage_bindings_must_be_explicit_and_absolute(tmp_path, key, value):
+    _, claude, codex, plugin, _, original = browser_home(tmp_path)
+    settings = json.loads((claude / "settings.json").read_bytes())
+    if value is None:
+        settings["env"].pop(key)
+    else:
+        settings["env"][key] = value
+    put_json(claude / "settings.json", settings)
+    merged, _ = plan_config(claude, codex, [plugin], adopt_playwright=True)
+    assert merged == original
 
 
 def test_opt_in_preserves_all_unrelated_fields_and_bytes_then_converges(tmp_path):
@@ -85,7 +100,7 @@ def test_native_settings_can_change_after_adoption_but_owned_args_cannot(tmp_pat
 def test_invalid_source_policy_fails_closed_without_adopting(tmp_path, mutation):
     home, claude, codex, plugin, spec, original = browser_home(tmp_path)
     if mutation == "per_site":
-        spec["args"][3] = str(home / ".pw-auth/store/site.json")
+        spec["args"][3] = str(home / "private-browser/store/site.json")
     elif mutation == "no_isolation":
         spec["args"].remove("--isolated")
     elif mutation == "persistent":
@@ -95,7 +110,7 @@ def test_invalid_source_policy_fails_closed_without_adopting(tmp_path, mutation)
     elif mutation == "remote":
         spec = {"url": "https://example.com/mcp"}
     else:
-        (home / ".pw-auth/shared.json").unlink()
+        (home / "private-browser/shared.json").unlink()
     put_json(plugin / ".mcp.json", {"playwright": spec})
     result, report = plan_config(claude, codex, [plugin], adopt_playwright=True)
     assert result == original
@@ -165,6 +180,8 @@ def test_existing_apply_backups_and_rollback_cover_adoption(tmp_path):
 def load_script(name):
     if SCRIPTS is None or not (SCRIPTS / (name + ".py")).is_file():
         pytest.skip("source-helper integration requires PROFILE_BRIDGE_TEST_SCRIPTS")
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
     spec = importlib.util.spec_from_file_location("synthetic_" + name, SCRIPTS / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -180,12 +197,22 @@ def test_guard_uses_every_shard_and_absorbs_full_context_without_pruning(tmp_pat
     home = tmp_path / "synthetic home"
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PW_AUTH_CONFIG", str(home / "private-browser"))
+    monkeypatch.setenv("PW_MCP_OUTPUT_DIR", str(home / "browser-output"))
     guard = load_script("pw_isolation_guard")
-    authdir = home / ".pw-auth"
+    authdir = home / "private-browser"
     put_json(authdir / "store/alpha.json", state("alpha.example.com"))
     put_json(authdir / "store/beta.json", state("beta.example.com"))
     put_json(authdir / "shared.json", state("old.example.com"))
     put_json(authdir / "incoming/context.json", state("new.example.com"))
+    # This test exercises merging, not remote visibility lookup. Admit only
+    # the synthetic companion; the live private-root check remains unchanged.
+    import pw_storage_paths
+    class SyntheticBoundary:
+        @staticmethod
+        def prove_private_companion(root):
+            assert root == authdir
+    monkeypatch.setattr(pw_storage_paths, "_boundary", lambda home: SyntheticBoundary)
     monkeypatch.setattr(guard, "prune_stale", lambda *a: pytest.fail("must not prune"))
     monkeypatch.setattr(guard, "patch_isolation", lambda *a: pytest.fail("must not patch plugins"))
     monkeypatch.setattr(sys, "argv", ["guard", "--prepare-shared-state"])
@@ -214,11 +241,13 @@ def test_guard_uses_every_shard_and_absorbs_full_context_without_pruning(tmp_pat
 def test_readonly_guard_rejects_bad_policy_and_redacts_errors(tmp_path, monkeypatch, capsys, mutation):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PW_AUTH_CONFIG", str(tmp_path / "private-browser"))
+    monkeypatch.setenv("PW_MCP_OUTPUT_DIR", str(tmp_path / "browser-output"))
     guard = load_script("pw_isolation_guard")
     auth = guard.auth_module()
     saved = state("alpha.example.com")
-    put_json(tmp_path / ".pw-auth/store/alpha.json", saved)
-    put_json(tmp_path / ".pw-auth/shared.json", auth.merge_states([saved]))
+    put_json(tmp_path / "private-browser/store/alpha.json", saved)
+    put_json(tmp_path / "private-browser/shared.json", auth.merge_states([saved]))
     args = list(guard.WANT_ARGS)
     command = "npx"
     if mutation == "launcher":
@@ -226,11 +255,11 @@ def test_readonly_guard_rejects_bad_policy_and_redacts_errors(tmp_path, monkeypa
     elif mutation == "duplicate":
         args.append("--isolated")
     elif mutation == "per_site":
-        args[3] = str(tmp_path / ".pw-auth/store/alpha.json")
+        args[3] = str(tmp_path / "private-browser/store/alpha.json")
     elif mutation == "persistent":
         args.extend(["--user-data-dir", str(tmp_path / "persistent")])
     else:
-        put(tmp_path / ".pw-auth/shared.json", '{"synthetic-private-value":')
+        put(tmp_path / "private-browser/shared.json", '{"synthetic-private-value":')
     config = tmp_path / ".codex/config.toml"
     put(config, '[mcp_servers.playwright]\ncommand=' + json.dumps(command) + '\nargs=' + json.dumps(args) + '\n')
     monkeypatch.setattr(sys, "argv", ["guard", "--check-codex-config", str(config)])
@@ -244,19 +273,23 @@ def test_readonly_guard_rejects_bad_policy_and_redacts_errors(tmp_path, monkeypa
 def test_uninitialized_union_is_never_replaced_with_empty_seed(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PW_AUTH_CONFIG", str(tmp_path / "private-browser"))
+    monkeypatch.setenv("PW_MCP_OUTPUT_DIR", str(tmp_path / "browser-output"))
     guard = load_script("pw_isolation_guard")
     monkeypatch.setattr(sys, "argv", ["guard", "--prepare-shared-state"])
     assert guard.main() == 1
-    assert not (tmp_path / ".pw-auth/shared.json").exists()
+    assert not (tmp_path / "private-browser/shared.json").exists()
     assert "check failed" in capsys.readouterr().err
 
 
 def test_export_reminder_checks_configured_output_directory(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PW_AUTH_CONFIG", str(tmp_path / "private-browser"))
+    monkeypatch.setenv("PW_MCP_OUTPUT_DIR", str(tmp_path / "browser-output"))
     monkeypatch.chdir(tmp_path)
     guard = load_script("pw_export_guard")
-    put(tmp_path / ".playwright-mcp-output/page-example.txt", "synthetic capture")
+    put(tmp_path / "browser-output/page-example.txt", "synthetic capture")
     assert guard.main() == 0
     message = capsys.readouterr().err
     assert "Export the full context" in message
@@ -264,7 +297,7 @@ def test_export_reminder_checks_configured_output_directory(tmp_path, monkeypatc
     assert "unique incoming filename" in message
     assert "pw-auth.py absorb" in message
     assert "probably dead" not in message
-    put(tmp_path / ".pw-auth/incoming/unique.json", "{}")
+    put(tmp_path / "private-browser/incoming/unique.json", "{}")
     assert guard.main() == 0
     assert capsys.readouterr().err == ""
 
