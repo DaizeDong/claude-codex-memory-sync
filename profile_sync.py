@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tomllib
 
@@ -1009,16 +1010,72 @@ def snapshot_matches(path: Path, current: dict, expected: dict) -> bool:
     return False
 
 
-def rollback(backup: Path, codex: Path, skills: Path) -> dict:
+_REPARSE_POINT = 0x400
+
+
+def _discard_backup(backup: Path) -> bool:
+    """Remove one run's rollback copy once that run no longer needs it.
+
+    The copy exists so a failing apply can put every destination back. It is not a history: it
+    is removed after a successful apply, after a failed apply whose rollback completed, and after
+    an explicit --rollback completed. Only the flat set of regular files this module writes is
+    removed. Unexpected entries or errors during preflight return False before removal.
+    Errors during removal can leave only part of the copy, so False identifies a cleanup
+    location, not a promise that a complete rollback copy still exists.
+    """
+    try:
+        assert_plain_path(backup)
+        try:
+            info = backup.lstat()
+        except FileNotFoundError:
+            return True
+        if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT:
+            return False
+        with os.scandir(backup) as scan:
+            entries = list(scan)
+        for entry in entries:
+            info = entry.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT:
+                return False
+    except (OSError, ValueError):
+        return False
+    try:
+        for entry in entries:
+            os.unlink(entry.path)
+        os.rmdir(backup)
+    except OSError:
+        return False
+    try:
+        os.rmdir(backup.parent)  # the backups root goes too once nothing is left in it
+    except OSError:
+        pass
+    return True
+
+
+def rollback(backup: Path, codex: Path, skills: Path, *, discard: bool = True) -> dict:
     with destination_lock(codex, skills):
-        return _rollback_locked(backup, codex, skills)
+        result = _rollback_locked(backup, codex, skills)
+        if discard and not _discard_backup(backup):
+            result["cleanup_pending"] = str(backup)
+        return result
+
+
+def cleanup_error_context(exc: Exception) -> dict:
+    """Expose only paths attached by this module, never raw exception contents."""
+    return {name: value for name in ("cleanup_pending", "recovery_required")
+            if isinstance(value := getattr(exc, "profile_" + name, None), str)}
 
 
 def _rollback_locked(backup: Path, codex: Path, skills: Path) -> dict:
+    assert_plain_path(backup)
+    if not stat.S_ISDIR(backup.lstat().st_mode):
+        raise ValueError("Backup must be an ordinary directory")
     base = codex / "claude-sync/backups"
     if not backup.resolve().is_relative_to(base.resolve()):
         raise ValueError("Backup must be inside this Codex home's claude-sync/backups")
-    manifest = read_json(backup / "manifest.json")
+    manifest_path = backup / "manifest.json"
+    assert_plain_path(manifest_path)
+    manifest = read_json(manifest_path)
     if manifest.get("codex_home") != str(codex) or manifest.get("skills_home") != str(skills):
         raise ValueError("Backup destination roots do not match this invocation")
     result = {"restored": [], "preserved": []}
@@ -1051,6 +1108,7 @@ def _rollback_locked(backup: Path, codex: Path, skills: Path) -> dict:
             restore_link(path, row["before"])
         else:
             stored = backup / row["backup_file"]
+            assert_plain_path(stored)
             if not stored.resolve().is_relative_to(backup.resolve()):
                 raise ValueError("Unsafe payload path in backup manifest")
             data = stored.read_bytes()
@@ -1265,11 +1323,20 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
             report['memory']['delivery'] = memory_outbox.deliver(intent, skills=skills)
             if report['memory']['delivery'].get('unresolved'):
                 report['memory']['status'] = 'partial'
-        report.update(status="applied", backup=str(backup))
-        atomic_write(backup / "report.json", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"))
-    except Exception:
-        rollback(backup, codex, skills)
+        report.update(status="applied")
+    except Exception as exc:
+        # The rollback copy is removed only once the rollback has completed. If the rollback
+        # itself fails, the copy stays: it is then the only way back (--rollback <path>).
+        try:
+            restored = rollback(backup, codex, skills)
+        except Exception as rollback_exc:
+            rollback_exc.profile_recovery_required = str(backup)
+            raise
+        if "cleanup_pending" in restored:
+            exc.profile_cleanup_pending = restored["cleanup_pending"]
         raise
+    if not _discard_backup(backup):
+        report["cleanup_pending"] = str(backup)
     return report
 
 
@@ -1320,9 +1387,9 @@ def main(argv=None):
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
     parser.add_argument("--skills-home", type=Path, default=Path.home() / ".agents/skills")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply", action="store_true", help="Apply changes after backup (default is zero-write preview)")
+    mode.add_argument("--apply", action="store_true", help="Apply changes behind a rollback copy that is removed when the run ends (default is zero-write preview)")
     mode.add_argument("--dry-run", action="store_true", help="Explicit zero-write preview")
-    mode.add_argument("--rollback", type=Path, help="Restore unchanged config/files from a backup; never delete memory notes")
+    mode.add_argument("--rollback", type=Path, help="Restore unchanged config/files from a rollback copy left by an interrupted run, then remove it; never delete memory notes")
     parser.add_argument("--json", action="store_true", help="Print catalog and compatibility metadata without workflow bodies")
     parser.add_argument("--repair-links", action="store_true", help="Plan recovery of broken links with exact previously owned approved sources")
     parser.add_argument("--approved-repo", action="append", type=Path, default=[], help="Additional authoritative local skill checkout (repeatable)")
@@ -1363,12 +1430,14 @@ def main(argv=None):
                 print("Memory:", report["memory"]["status"], "files:", report["memory"]["selected_files"])
                 print("MCP:", dict((status, sum(r["status"] == status for r in report["config"]["mcp"])) for status in sorted({r["status"] for r in report["config"]["mcp"]})))
                 print("Use --json for conflicts, skipped sources, and compatibility details.")
-            if "backup" in report:
-                print("Backup/report:", report["backup"])
+            if report.get("cleanup_pending"):
+                print("Cleanup pending; remaining files:", report["cleanup_pending"])
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
         # JSON/TOML parse errors may quote secrets from the input: print type only.
-        print(json.dumps({"status": "error", "error_type": type(exc).__name__, "message": "Sync failed; no source contents are printed. Inspect inputs and backup manifests locally."}), file=sys.stderr)
+        print(json.dumps({"status": "error", "error_type": type(exc).__name__,
+                          "message": "Sync failed; no source contents are printed. Inspect inputs and reported remaining paths locally.",
+                          **cleanup_error_context(exc)}), file=sys.stderr)
         return 1
 
 

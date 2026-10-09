@@ -173,8 +173,9 @@ def test_update_after_outbox_prepare_interruption_recovers_old_owned_bytes(archi
     assert archive['destination'].read_bytes() == archive['payloads']['updated']
 
 
-def test_regular_archive_rollback_uses_existing_backup_and_preserves_edits(archive):
+def test_regular_archive_rollback_uses_existing_backup_and_preserves_edits(archive, monkeypatch):
     import profile_sync as sync
+    monkeypatch.setattr(sync, '_discard_backup', lambda backup: False)  # an interrupted run left its copy
     archive['source'].write_bytes(archive['payloads']['updated'])
     plan, _ = memory.plan_memory(archive['claude'], archive['codex'])
     memory.apply_memory_plan(plan, archive['claude'], archive['codex'])
@@ -225,9 +226,21 @@ def test_modified_index_requires_exact_adoption_and_does_not_hide_edits(archive)
                     action='adopt', source_root=str(archive['claude'] / 'projects'), review_id='review-index')
     plans, report = memory.plan_memory(archive['claude'], archive['codex'], reviewed_archive=[decision])
     assert index in plans
-    memory.apply_memory_plan(plans, archive['claude'], archive['codex'])
-    backups = archive['codex'] / 'claude-sync/backups'
-    assert any(archive['payloads']['edited'] in p.read_bytes() for p in backups.rglob('*.bin'))
+    import profile_sync as sync
+    real_discard, seen = sync._discard_backup, []
+
+    def discard(backup):
+        # While the run could still fail, its rollback copy held the reviewed, edited index.
+        seen.append(any(archive['payloads']['edited'] in p.read_bytes() for p in backup.glob('*.bin')))
+        return real_discard(backup)
+
+    sync._discard_backup = discard
+    try:
+        memory.apply_memory_plan(plans, archive['claude'], archive['codex'])
+    finally:
+        sync._discard_backup = real_discard
+    assert seen == [True]
+    assert not (archive['codex'] / 'claude-sync/backups').exists()
 
 
 def test_unavailable_active_scope_map_does_not_approve_unknown_override(archive):
@@ -251,8 +264,9 @@ def test_ownership_restore_validation_is_pure_and_rejects_invalid_hash(archive):
         outbox.validate_restore_state(archive['codex'], state)
 
 
-def test_integrated_profile_quarantines_legacy_risk_and_rollback_keeps_it_hidden(archive):
+def test_integrated_profile_quarantines_legacy_risk_and_rollback_keeps_it_hidden(archive, monkeypatch):
     import profile_sync as sync
+    monkeypatch.setattr(sync, '_discard_backup', lambda backup: False)  # an interrupted run left its copy
     destination = archive['destination'].with_name('legacy.md')
     destination.write_bytes(archive['payloads']['risk'])
     archive['source'].with_name('legacy.md').write_bytes(archive['payloads']['risk'])
@@ -263,7 +277,7 @@ def test_integrated_profile_quarantines_legacy_risk_and_rollback_keeps_it_hidden
     assert any(hygiene.RETIREMENT in row for row in changes)
     result = sync.apply_plan(changes, report, archive['codex'], skills)
     from pathlib import Path
-    backup = Path(result['backup'])
+    backup = Path(result['cleanup_pending'])
     assert not destination.exists()
     assert next(backup.glob('quarantine-*.bin')).read_bytes() == archive['payloads']['risk']
     assert 'Z' * 32 not in json.dumps(result)
@@ -293,8 +307,11 @@ def test_integrated_retirement_restart_converges(archive, monkeypatch, boundary)
     memory.apply_memory_plan(retry, archive['claude'], archive['codex'])
     assert not archive['destination'].exists()
     assert not memory.plan_memory(archive['claude'], archive['codex'])[0]
-    assert any(p.read_bytes() == archive['payloads']['original']
-               for p in (archive['codex'] / 'claude-sync/backups').rglob('quarantine-*.bin'))
+    # Only the interrupted run's copy is left (it may be the only way back); the retry removed its own.
+    left = list((archive['codex'] / 'claude-sync/backups').iterdir())
+    assert len(left) == 1
+    held = any(p.read_bytes() == archive['payloads']['original'] for p in left[0].glob('quarantine-*.bin'))
+    assert held == (boundary == 'archive_retired')
 
 
 def test_cross_home_restore_rebinds_only_reviewed_archive_root(archive, tmp_path):

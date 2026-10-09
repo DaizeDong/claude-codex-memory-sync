@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import profile_health as health
 import run_profile_sync as runner
+from tools.make_fixtures import make_profile_rollback_fixture
 
 
 def report():
@@ -121,6 +122,61 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
             self.assertEqual(result["exit_code"], 0)
             self.assertTrue((root/"codex/claude-sync/last-success.json").is_file())
+
+    def test_success_reports_pending_cleanup_without_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex, skills, backup = root / "codex", root / "skills", root / "rollback"
+            make_profile_rollback_fixture(backup, codex, skills)
+            with patch.object(runner, "build_plan", return_value=([], report())), \
+                    patch.object(runner, "apply_plan", return_value={"cleanup_pending": str(backup)}):
+                result = runner.run(root / "claude", codex, skills, apply=True, write_status=True)
+            self.assertEqual(result["status"], "healthy")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["cleanup_pending"], str(backup))
+            self.assertNotIn("backup", result)
+            stored = json.loads((codex / "claude-sync/last-run.json").read_text())
+            self.assertEqual(stored["cleanup_pending"], str(backup))
+            self.assertNotIn("backup", stored)
+
+    def test_verification_failure_retains_pending_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex, skills, backup = root / "codex", root / "skills", root / "rollback"
+            make_profile_rollback_fixture(backup, codex, skills)
+            failure = ValueError("synthetic-private-input")
+            with patch.object(runner, "build_plan", side_effect=[([], report()), failure]), \
+                    patch.object(runner, "apply_plan", return_value={"cleanup_pending": str(backup)}):
+                result = runner.run(root / "claude", codex, skills, apply=True, write_status=True)
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["exit_code"], 1)
+            self.assertEqual(result["error_type"], "ValueError")
+            self.assertEqual(result["cleanup_pending"], str(backup))
+            stored = json.loads((codex / "claude-sync/last-run.json").read_text())
+            self.assertEqual(stored["cleanup_pending"], str(backup))
+            self.assertNotIn("synthetic-private-input", json.dumps(stored))
+            self.assertFalse((codex / "claude-sync/last-success.json").exists())
+
+    def test_apply_failure_reports_cleanup_context_without_error_text(self):
+        for field in ("cleanup_pending", "recovery_required"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                codex, skills, backup = root / "codex", root / "skills", root / "rollback"
+                make_profile_rollback_fixture(backup, codex, skills)
+                failure = OSError("synthetic-private-input")
+                setattr(failure, "profile_" + field, str(backup))
+                with patch.object(runner, "build_plan", return_value=([], report())), \
+                        patch.object(runner, "apply_plan", side_effect=failure):
+                    result = runner.run(root / "claude", codex, skills, apply=True, write_status=True)
+                self.assertEqual(result["status"], "error")
+                self.assertEqual(result["exit_code"], 1)
+                self.assertEqual(result["error_type"], "OSError")
+                self.assertEqual(result[field], str(backup))
+                self.assertNotIn("backup", result)
+                stored = json.loads((codex / "claude-sync/last-run.json").read_text())
+                self.assertEqual(stored[field], str(backup))
+                self.assertNotIn("synthetic-private-input", json.dumps(stored))
+                self.assertFalse((codex / "claude-sync/last-success.json").exists())
 
 
 if __name__ == "__main__":

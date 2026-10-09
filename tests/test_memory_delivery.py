@@ -365,10 +365,11 @@ sync.apply_plan(changes,report,base/'codex',base/'skills')
     def test_rollback_preserves_outbox_history_notes_and_replay_identity(self):
         self.grant()
         changes, report = sync.build_plan(self.claude, self.codex, self.skills)
-        report = sync.apply_plan(changes, report, self.codex, self.skills)
+        with patch.object(sync, '_discard_backup', new=lambda backup: False):  # an interrupted run left its copy
+            report = sync.apply_plan(changes, report, self.codex, self.skills)
         before = {p: p.read_bytes() for p in outbox.state_root(self.codex).rglob('*') if p.is_file()}
         notes = {p: p.read_bytes() for p in self.notes()}
-        sync.rollback(Path(report['backup']), self.codex, self.skills)
+        sync.rollback(Path(report['cleanup_pending']), self.codex, self.skills)
         for path, data in {**before, **notes}.items():
             self.assertEqual(path.read_bytes(), data)
         result, _ = self.apply()

@@ -6,6 +6,57 @@ import profile_memory as memory
 from profile_bridge import memory_outbox as outbox
 
 
+def make_profile_rollback_fixture(backup, codex_home, skills_home):
+    """Generate one flat rollback copy containing only fixed synthetic content."""
+    import hashlib
+    import json
+
+    backup, codex_home, skills_home = map(Path, (backup, codex_home, skills_home))
+    previous, current = b"previous content", b"current content"
+    destination = codex_home / "synthetic-rollback-output.txt"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(current)
+    backup.mkdir(parents=True, exist_ok=True)
+    (backup / "payload.bin").write_bytes(previous)
+    manifest = {
+        "codex_home": str(codex_home), "skills_home": str(skills_home),
+        "changes": [{
+            "path": str(destination), "backup_file": "payload.bin",
+            "before": {"kind": "file", "sha256": hashlib.sha256(previous).hexdigest()},
+            "after": {"kind": "file", "sha256": hashlib.sha256(current).hexdigest()},
+        }],
+    }
+    (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return destination
+
+
+def make_profile_invalid_backup_root(path):
+    """Generate an ordinary file where the rollback API requires a directory."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"keep ordinary file")
+
+
+def make_profile_apply_fixture(codex_home):
+    """Generate two fixed synthetic file changes for apply and rollback faults."""
+    import hashlib
+
+    codex_home = Path(codex_home)
+    codex_home.mkdir(parents=True, exist_ok=True)
+    changes = []
+    for name in ("first", "second"):
+        path = codex_home / ("synthetic-apply-" + name + ".txt")
+        before = ("original synthetic " + name + "\n").encode()
+        after = ("updated synthetic " + name + "\n").encode()
+        path.write_bytes(before)
+        changes.append({
+            "path": str(path), "data": after, "append_only": False,
+            "before": {"kind": "file", "sha256": hashlib.sha256(before).hexdigest()},
+            "after": {"kind": "file", "sha256": hashlib.sha256(after).hexdigest()},
+        })
+    return changes
+
+
 def make_workflow_recording_result(client):
     """A successful synthetic provider response with an independent storage failure."""
     return client.Result(

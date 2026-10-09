@@ -13,8 +13,21 @@ All notable changes to this project are documented here (Keep a Changelog style)
   retirement is ownership-checked, and scheduler success is recorded only after
   verification. Tests use synthetic temporary trees.
 
+### Changed
+
+- An applying run removes its temporary rollback copy under `claude-sync/backups/`
+  after success or a completed rollback. Cleanup failures report remaining files
+  as `cleanup_pending`; failed automatic rollback retains recovery material and
+  reports `recovery_required`. The CLI and scheduled runner preserve these paths
+  without exposing exception contents. Successful runs used to leave one directory
+  per run. Retired memory copies follow the same cleanup; their Claude source is
+  the record.
+
 ### Fixed
 
+- Backup cleanup rejects linked roots and ancestors and completes file preflight
+  before deletion. Filesystem errors during preflight retain every file, while
+  partial deletion is reported as cleanup pending rather than a complete backup.
 - Cross-home remapping re-hashes intact ownership markers in every artifact file,
   not only `AGENTS.md`, `SKILL.md` and `*.toml`. Verification already checks the
   markers of routed alternatives (`alternatives/<name>/ENTRYPOINT.md`), so a

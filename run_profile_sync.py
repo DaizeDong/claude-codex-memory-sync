@@ -9,7 +9,7 @@ import sys
 import tomllib
 
 from profile_sync import (add_runtime_input_arguments, apply_plan, assert_plain_path,
-                          atomic_write, build_plan, destination_lock, ensure_external,
+                          atomic_write, build_plan, cleanup_error_context, destination_lock, ensure_external,
                           load_runtime_inputs)
 from profile_health import assess, check_mcp
 from profile_bridge.overlays import OMITTED, require_valid_selection, validate_inputs
@@ -34,7 +34,8 @@ def run(claude, codex, skills, *, apply=False, write_status=False, probe=False,
         if reviewed_scopes:
             runtime_args['reviewed_scopes'] = deepcopy(reviewed_scopes)
     except Exception as exc:
-        return {'status': 'error', 'error_type': type(exc).__name__, 'exit_code': 1}
+        return {'status': 'error', 'error_type': type(exc).__name__, 'exit_code': 1,
+                **cleanup_error_context(exc)}
     started = datetime.now(timezone.utc).isoformat()
     state = codex / "claude-sync"
     success = state / "last-success.json"
@@ -51,26 +52,29 @@ def run(claude, codex, skills, *, apply=False, write_status=False, probe=False,
                 require_valid_selection(plan)
                 if apply:
                     applied = apply_plan(changes, plan, codex, skills)
+                    result['cleanup_pending'] = applied.get('cleanup_pending')
                     # Exact-byte archive reviews authorize this transaction only.
                     # Successful retirement consumes the reviewed destination;
                     # verify the resulting owned state without replaying it.
                     verification_args = {k: v for k, v in runtime_args.items() if k != 'reviewed_archive'}
                     _, verified = build_plan(claude, codex, skills, request_id=request_id, scope=scope, periodic=periodic, **verification_args)
                 else:
-                    applied, verified = plan, plan
+                    verified = plan
                 require_valid_selection(verified)
                 config_file = codex / "config.toml"
                 config = tomllib.loads(config_file.read_text(encoding="utf-8-sig")) if config_file.exists() else {}
                 checks = check_mcp(config.get("mcp_servers", {}), probe=probe)
                 result.update(assess(verified, checks))
                 result.update(change_count=len(changes), remaining_changes=verified.get("change_count", 0),
-                              backup=applied.get("backup"), report=verified,
+                              report=verified,
                               exit_code=0 if result["status"] == "healthy" else 2)
             except Exception as exc:
                 # Source parse exceptions may contain secrets. Store the type only.
-                result.update(status="error", error_type=type(exc).__name__, exit_code=1)
+                result.update(status="error", error_type=type(exc).__name__, exit_code=1,
+                              **cleanup_error_context(exc))
             _publish(result, state, success, write_status)
     except Exception as exc:
+        result.update(cleanup_error_context(exc))
         # Lock contention must not overwrite the active runner's status or marker.
         from profile_bridge.restore_interlock import RestoreRecoveryRequired
         if isinstance(exc, RestoreRecoveryRequired):
