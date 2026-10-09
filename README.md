@@ -33,7 +33,7 @@ resolved path. Destination junctions and symlinks remain rejected before writes.
 # Inspect conflict, skipped-source, and compatibility details without source bodies.
 .\sync-all.cmd --dry-run --json
 
-# Apply the current plan after creating a local backup.
+# Apply the current plan behind a rollback copy that is removed when the run ends.
 .\sync-all.cmd --apply --json
 ```
 
@@ -63,19 +63,19 @@ Every run recomputes content hashes. New installations and default invocations m
 
 Delivery uses a durable outbox and stable increment-based note names. Each increment includes its predecessor, so repeated A to B transitions remain distinct. An interrupted attempt whose delivery cannot be proven is `delivery_unknown` and is never blindly replayed. Notes are created through OS no-replace publication; existing notes and user edits are preserved. Native consolidation is asynchronous. See [memory authorization, persistence, and controller integration](docs/MEMORY_OUTBOX.md) for exact formats and recovery limits.
 
-The current index identifies the active source snapshot. The archive planner retires unchanged owned copies when their source disappears or is excluded, retaining evidence in the existing private profile backup outside the searchable import. Unowned legacy copies require an exact-hash review decision; edited destinations are preserved and reported. Archive ownership is recorded by the existing memory outbox. See [archive hygiene and transaction hooks](docs/MEMORY_ARCHIVE_HYGIENE.md) for integration, reviewed scopes, and rollback behavior. No native `MEMORY.md`, memory summary, rollout evidence, or SQLite file is rewritten.
+The current index identifies the active source snapshot. The archive planner retires unchanged owned copies when their source disappears or is excluded: the copy leaves the searchable import, is held in the run's rollback copy while that run can still fail, and is gone when the run ends (the Claude memory it was copied from is the source of truth). Unowned legacy copies require an exact-hash review decision; edited destinations are preserved and reported. Archive ownership is recorded by the existing memory outbox. See [archive hygiene and transaction hooks](docs/MEMORY_ARCHIVE_HYGIENE.md) for integration, reviewed scopes, and rollback behavior. No native `MEMORY.md`, memory summary, rollout evidence, or SQLite file is rewritten.
 
-### Backups and rollback
+### Rollback copy
 
-Each applying run with changes stores its manifest, original file contents, and report under `~/.codex/claude-sync/backups/<run-id>` (or the selected Codex home). To restore that run:
+Before an applying run changes anything, it copies the manifest and the original bytes of every destination it will change to `~/.codex/claude-sync/backups/<run-id>` (or the selected Codex home). The run removes this temporary copy after success or a completed rollback. If cleanup cannot finish, `cleanup_pending` reports the directory of remaining files; it may contain only fragments and is not a promise of a usable rollback copy. If automatic rollback fails, cleanup does not run and `recovery_required` identifies the retained recovery material. A process interrupted before cleanup can also leave a copy. Restore from a complete copy with:
 
 ```powershell
 .\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json
 ```
 
-Use the backup path reported by the applying run. Rollback restores files and links only when their current state still matches what that run wrote; later user edits are preserved. Outbox history, prepared evidence, authorization records, and appended memory notes are retained because removing a file cannot reliably retract memory already processed by Codex. Live profile data and backups must remain outside this repository.
+A completed rollback removes the copy as well. Rollback restores files and links only when their current state still matches what that run wrote; later user edits are preserved. Outbox history, prepared evidence, authorization records, and appended memory notes are retained because removing a file cannot reliably retract memory already processed by Codex. Live profile data and rollback copies must remain outside this repository.
 
-Explicitly disabled plugins and removed source items retire only intact artifacts owned by this bridge. User edits and unavailable source installations are preserved and reported. Retirement is covered by the same backup/rollback mechanism; native memory notes remain append-only.
+Explicitly disabled plugins and removed source items retire only intact artifacts owned by this bridge. User edits and unavailable source installations are preserved and reported. Retirement is covered by the same rollback copy; native memory notes remain append-only.
 
 ### Inventory and linked resources
 

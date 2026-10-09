@@ -1,6 +1,6 @@
 """End-to-end profile bridge tests using synthetic temporary homes only."""
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -9,10 +9,11 @@ import sys
 import tempfile
 import tomllib
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import profile_sync as sync
-from tools.make_fixtures import make_profile_hook_source, make_windows_short_path
+from tools.make_fixtures import (make_profile_apply_fixture, make_profile_hook_source, make_profile_invalid_backup_root,
+                                make_profile_rollback_fixture, make_windows_short_path)
 
 
 class ProfileSyncTests(unittest.TestCase):
@@ -58,17 +59,18 @@ class ProfileSyncTests(unittest.TestCase):
             sync.build_plan(self.claude, self.codex, self.skills)
         self.assertTrue(adapter.is_file())
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_legacy_backup_link_snapshot_still_rolls_back(self):
         source = self.source_skill()
         target = self.skills / "example"
         changes = [{"path": str(target), "before": {"kind": "missing"},
                     "after": sync.planned_link(source), "append_only": False}]
         report = sync.apply_plan(changes, {}, self.codex, self.skills)
-        manifest_path = Path(report["backup"]) / "manifest.json"
+        manifest_path = Path(report["cleanup_pending"]) / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["changes"][0]["after"].pop("link_type")
         manifest_path.write_text(json.dumps(manifest))
-        restored = sync.rollback(Path(report["backup"]), self.codex, self.skills)
+        restored = sync.rollback(Path(report["cleanup_pending"]), self.codex, self.skills)
         self.assertEqual(restored["preserved"], [])
         self.assertFalse(sync.linked(target))
 
@@ -214,6 +216,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertEqual(sync.apply_plan(changes, report, self.codex, self.skills)["status"], "no_changes")
         self.assertEqual(self.tree(), after)
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_rollback_restores_config_and_keeps_memory_notes_and_source_junction(self):
         original = self.existing_config()
         native = self.native_skill()
@@ -230,7 +233,7 @@ class ProfileSyncTests(unittest.TestCase):
         notes = list((self.codex / "memories" / "extensions" / "ad_hoc" / "notes").glob("*.md"))
         self.assertEqual(len(notes), 1)
         note_bytes = notes[0].read_bytes()
-        result = sync.rollback(Path(report["backup"]), self.codex, self.skills)
+        result = sync.rollback(Path(report["cleanup_pending"]), self.codex, self.skills)
         self.assertEqual((self.codex / "config.toml").read_bytes(), original)
         self.assertEqual(native.read_bytes(), native_bytes)
         self.assertFalse(destination.exists())
@@ -278,6 +281,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.junction(source_link, second)
         return first, second, source_link, state, before_state
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_managed_skill_upgrade_relinks_and_rollback_restores_previous_link(self):
         first, second, source_link, state, before_state = self.prepare_upgrade()
         first_contents, second_contents = self.tree(first), self.tree(second)
@@ -288,7 +292,7 @@ class ProfileSyncTests(unittest.TestCase):
         result = sync.apply_plan(changes, report, self.codex, self.skills)
         self.assertEqual(destination.resolve(), second.resolve())
         self.assertEqual(self.plan()[0], [])
-        sync.rollback(Path(result["backup"]), self.codex, self.skills)
+        sync.rollback(Path(result["cleanup_pending"]), self.codex, self.skills)
         self.assertTrue(sync.linked(destination))
         self.assertEqual(destination.resolve(), first.resolve())
         self.assertEqual(source_link.resolve(), second.resolve())
@@ -363,12 +367,13 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertEqual((self.codex / "config.toml").read_bytes(), customized)
         self.assertFalse((self.codex / "AGENTS.md").exists())
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_rollback_preserves_files_changed_after_apply(self):
         self.existing_config()
         report = self.apply()
         changed = b'model = "post-apply-user-choice"\n'
         self.write(self.codex / "config.toml", changed)
-        result = sync.rollback(Path(report["backup"]), self.codex, self.skills)
+        result = sync.rollback(Path(report["cleanup_pending"]), self.codex, self.skills)
         self.assertEqual((self.codex / "config.toml").read_bytes(), changed)
         self.assertTrue(any(row["path"] == str(self.codex / "config.toml") and row["reason"] == "changed_since_sync" for row in result["preserved"]))
 
@@ -415,20 +420,259 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertTrue((second / "SKILL.md").exists())
         self.assertEqual(self.tree(self.claude), before)
 
-    def test_final_report_write_failure_rolls_back_config(self):
+    def backup_root(self):
+        return self.codex / "claude-sync" / "backups"
+
+    def test_successful_apply_leaves_no_rollback_copy(self):
+        # The owner keeps no backup copies: the copy exists only while the run can still fail.
+        self.existing_config()
+        report = self.apply()
+        self.assertEqual(report["status"], "applied")
+        self.assertNotIn("cleanup_pending", report)
+        self.assertFalse(self.backup_root().exists())
+
+    def test_failed_apply_rolls_back_then_removes_its_copy(self):
         original = self.existing_config()
         changes, report = self.plan()
         real_write = sync.atomic_write
 
-        def fail_report(path, data):
-            if path.name == "report.json":
-                raise OSError("Synthetic final report failure")
+        def fail_config(path, data):
+            if path.name == "config.toml":
+                raise OSError("Synthetic publication failure")
             real_write(path, data)
 
-        with patch.object(sync, "atomic_write", side_effect=fail_report):
+        with patch.object(sync, "atomic_write", side_effect=fail_config):
             with self.assertRaises(OSError):
                 sync.apply_plan(changes, report, self.codex, self.skills)
         self.assertEqual((self.codex / "config.toml").read_bytes(), original)
+        self.assertFalse(self.backup_root().exists())
+
+    def test_failed_rollback_keeps_the_copy_for_manual_recovery(self):
+        self.existing_config()
+        changes, report = self.plan()
+        real_write = sync.atomic_write
+
+        def fail_config(path, data):
+            if path.name == "config.toml":
+                raise OSError("Synthetic publication failure")
+            real_write(path, data)
+
+        def broken_rollback(*args, **kwargs):
+            raise ValueError("Synthetic rollback failure")
+
+        with patch.object(sync, "atomic_write", side_effect=fail_config), \
+                patch.object(sync, "_rollback_locked", side_effect=broken_rollback):
+            with self.assertRaises(ValueError):
+                sync.apply_plan(changes, report, self.codex, self.skills)
+        kept = list(self.backup_root().iterdir())
+        self.assertEqual(len(kept), 1)
+        self.assertTrue((kept[0] / "manifest.json").is_file())
+
+    def test_manual_rollback_of_a_leftover_copy_removes_it(self):
+        original = self.existing_config()
+        with patch.object(sync, "_discard_backup", new=lambda backup: False):
+            report = self.apply()
+        backup = Path(report["cleanup_pending"])
+        self.assertTrue(backup.is_dir())
+        sync.rollback(backup, self.codex, self.skills)
+        self.assertEqual((self.codex / "config.toml").read_bytes(), original)
+        self.assertFalse(backup.exists())
+        self.assertFalse(self.backup_root().exists())
+
+    def test_discard_leaves_a_copy_with_unexpected_entries_in_place(self):
+        backup = self.backup_root() / "synthetic-run"
+        (backup / "nested").mkdir(parents=True)
+        self.write(backup / "manifest.json", b"{}")
+        self.assertFalse(sync._discard_backup(backup))
+        self.assertTrue((backup / "manifest.json").is_file())
+        self.assertTrue(sync._discard_backup(self.backup_root() / "absent"))
+
+    def test_successful_apply_reports_pending_cleanup_without_changing_success(self):
+        changes = make_profile_apply_fixture(self.codex)
+        with patch.object(sync, "_discard_backup", return_value=False):
+            report = sync.apply_plan(changes, {}, self.codex, self.skills)
+        self.assertEqual(report["status"], "applied")
+        self.assertTrue(Path(report["cleanup_pending"]).is_dir())
+        self.assertNotIn("backup", report)
+        self.assertNotIn("backup_kept", report)
+        for row in changes:
+            self.assertEqual(sync.snapshot(Path(row["path"])), row["after"])
+
+    def test_partial_cleanup_reports_remnants_without_promising_rollback_copy(self):
+        backup = self.backup_root() / "synthetic-run"
+        destination = make_profile_rollback_fixture(backup, self.codex, self.skills)
+        real_unlink, removed = os.unlink, []
+
+        def fail_second_member(path, *args, **kwargs):
+            if Path(path).parent == backup:
+                removed.append(Path(path))
+                if len(removed) == 2:
+                    raise PermissionError("synthetic cleanup refusal")
+            return real_unlink(path, *args, **kwargs)
+
+        output = io.StringIO()
+        with patch.object(sync.os, "unlink", side_effect=fail_second_member), redirect_stdout(output):
+            code = sync.main(["--claude-home", str(self.claude), "--codex-home", str(self.codex),
+                              "--skills-home", str(self.skills), "--rollback", str(backup)])
+        self.assertEqual(code, 0)
+        self.assertEqual(destination.read_bytes(), b"previous content")
+        self.assertEqual(len(removed), 2)
+        self.assertFalse(removed[0].exists())
+        self.assertTrue(removed[1].is_file())
+        self.assertIn("Cleanup pending; remaining files: " + str(backup), output.getvalue())
+        self.assertNotIn("Rollback copy kept", output.getvalue())
+
+    def test_failed_apply_rethrows_original_error_with_pending_cleanup_path(self):
+        changes = make_profile_apply_fixture(self.codex)
+        failure = OSError("synthetic private publication detail")
+        real_write = sync.atomic_write
+
+        def fail_second(path, data):
+            if str(path) == changes[1]["path"]:
+                raise failure
+            return real_write(path, data)
+
+        with patch.object(sync, "atomic_write", side_effect=fail_second), \
+                patch.object(sync, "_discard_backup", return_value=False):
+            with self.assertRaises(OSError) as caught:
+                sync.apply_plan(changes, {}, self.codex, self.skills)
+        self.assertIs(caught.exception, failure)
+        backup = Path(sync.cleanup_error_context(failure)["cleanup_pending"])
+        self.assertTrue((backup / "manifest.json").is_file())
+        for row in changes:
+            self.assertEqual(sync.snapshot(Path(row["path"])), row["before"])
+
+    def test_failed_apply_cli_reports_cleanup_or_recovery_path_without_error_contents(self):
+        for rollback_fails in (False, True):
+            with self.subTest(rollback_fails=rollback_fails):
+                changes = make_profile_apply_fixture(self.codex)
+                failure = OSError("synthetic private publication detail")
+                rollback_failure = ValueError("synthetic private recovery detail")
+                real_write = sync.atomic_write
+
+                def fail_second(path, data):
+                    if str(path) == changes[1]["path"]:
+                        raise failure
+                    return real_write(path, data)
+
+                output = io.StringIO()
+                with patch.object(sync, "build_plan", return_value=(changes, {})), \
+                        patch.object(sync, "atomic_write", side_effect=fail_second), \
+                        patch.object(sync, "_rollback_locked", wraps=sync._rollback_locked) as restore, \
+                        patch.object(sync, "_discard_backup", return_value=False) as discard, \
+                        redirect_stderr(output):
+                    if rollback_fails:
+                        restore.side_effect = rollback_failure
+                    code = sync.main(["--claude-home", str(self.claude), "--codex-home", str(self.codex),
+                                      "--skills-home", str(self.skills), "--apply", "--json"])
+                self.assertEqual(code, 1)
+                error = json.loads(output.getvalue())
+                expected = rollback_failure if rollback_fails else failure
+                self.assertEqual(error["error_type"], type(expected).__name__)
+                key = "recovery_required" if rollback_fails else "cleanup_pending"
+                backup = Path(error[key])
+                self.assertEqual(sync.cleanup_error_context(expected), {key: str(backup)})
+                self.assertNotIn("synthetic private", output.getvalue())
+                manifest = json.loads((backup / "manifest.json").read_bytes())
+                for row in manifest["changes"]:
+                    self.assertEqual(sync.snapshot(backup / row["backup_file"]), row["before"])
+                if rollback_fails:
+                    discard.assert_not_called()
+                    self.assertEqual(sync.snapshot(Path(changes[0]["path"])), changes[0]["after"])
+                else:
+                    discard.assert_called_once()
+                    self.assertEqual(sync.snapshot(Path(changes[0]["path"])), changes[0]["before"])
+
+    def test_discard_rejects_linked_backup_root_and_preserves_target(self):
+        target = self.base / "other-backup"
+        make_profile_rollback_fixture(target, self.codex, self.skills)
+        backup = self.backup_root() / "synthetic-run"
+        self.junction(backup, target)
+        before = self.tree(target)
+        self.assertFalse(sync._discard_backup(backup))
+        self.assertEqual(self.tree(target), before)
+        self.assertTrue(sync.linked(backup))
+
+    def test_discard_rejects_linked_ancestor_and_preserves_target(self):
+        target = self.base / "other-backups"
+        make_profile_rollback_fixture(target / "synthetic-run", self.codex, self.skills)
+        self.junction(self.backup_root(), target)
+        before = self.tree(target)
+        self.assertFalse(sync._discard_backup(self.backup_root() / "synthetic-run"))
+        self.assertEqual(self.tree(target), before)
+        self.assertTrue(sync.linked(self.backup_root()))
+
+    def test_discard_rejects_regular_file_as_backup_root(self):
+        backup = self.backup_root() / "synthetic-run"
+        make_profile_invalid_backup_root(backup)
+        self.assertFalse(sync._discard_backup(backup))
+        self.assertEqual(backup.read_bytes(), b"keep ordinary file")
+
+    def test_discard_stat_failure_preflights_all_entries_before_deletion(self):
+        backup = self.backup_root() / "synthetic-run"
+        make_profile_rollback_fixture(backup, self.codex, self.skills)
+        before = self.tree(backup)
+        with os.scandir(backup) as scan:
+            entries = list(scan)
+        for error in (PermissionError("synthetic stat denied"),
+                      FileNotFoundError("synthetic entry disappeared")):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(sync.os, "scandir") as scan:
+                    bad_entry = Mock(wraps=entries[-1])
+                    bad_entry.stat.side_effect = error
+                    checked = [*entries[:-1], bad_entry]
+                    scan.return_value.__iter__.return_value = iter(checked)
+                    scan.return_value.__enter__.return_value = iter(checked)
+                    self.assertFalse(sync._discard_backup(backup))
+                    bad_entry.stat.assert_called_once_with(follow_symlinks=False)
+                self.assertEqual(self.tree(backup), before)
+
+    def test_rollback_rejects_linked_backup_root_before_restoring(self):
+        backup = self.backup_root() / "synthetic-run"
+        destination = make_profile_rollback_fixture(backup, self.codex, self.skills)
+        target = backup.with_name("other-run")
+        backup.rename(target)
+        self.junction(backup, target)
+        before = self.tree(target)
+        with self.assertRaisesRegex(ValueError, "linked"):
+            sync.rollback(backup, self.codex, self.skills)
+        self.assertEqual(destination.read_bytes(), b"current content")
+        self.assertEqual(self.tree(target), before)
+        self.assertTrue(sync.linked(backup))
+
+    def test_rollback_rejects_linked_backup_ancestor_before_restoring(self):
+        backup = self.backup_root() / "synthetic-run"
+        destination = make_profile_rollback_fixture(backup, self.codex, self.skills)
+        target = self.backup_root().with_name("other-backups")
+        self.backup_root().rename(target)
+        self.junction(self.backup_root(), target)
+        before = self.tree(target)
+        with self.assertRaisesRegex(ValueError, "linked"):
+            sync.rollback(backup, self.codex, self.skills)
+        self.assertEqual(destination.read_bytes(), b"current content")
+        self.assertEqual(self.tree(target), before)
+        self.assertTrue(sync.linked(self.backup_root()))
+
+    def test_rollback_rejects_linked_manifest_and_payload(self):
+        for member in ("manifest.json", "payload.bin"):
+            with self.subTest(member=member):
+                backup = self.backup_root() / member
+                destination = make_profile_rollback_fixture(backup, self.codex, self.skills)
+                link = backup / member
+                target = backup / (member + ".original")
+                link.rename(target)
+                try:
+                    link.symlink_to(target)
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) == 1314:
+                        self.skipTest("Windows file symlinks require a privilege unavailable here")
+                    raise
+                self.addCleanup(link.unlink, missing_ok=True)
+                before = self.tree(backup)
+                with self.assertRaisesRegex(ValueError, "linked"):
+                    sync.rollback(backup, self.codex, self.skills)
+                self.assertEqual(destination.read_bytes(), b"current content")
+                self.assertEqual(self.tree(backup), before)
 
     def test_output_home_junction_is_rejected_without_writes(self):
         make_profile_hook_source(self.claude, sys.executable)
@@ -461,9 +705,10 @@ class ProfileSyncTests(unittest.TestCase):
             sync.apply_plan(changes, report, self.codex, self.skills)
         self.assertEqual(self.tree(outside), before)
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_rollback_rejects_manifest_paths_outside_destination_roots(self):
         report = self.apply()
-        backup = Path(report["backup"])
+        backup = Path(report["cleanup_pending"])
         manifest = json.loads((backup / "manifest.json").read_text())
         outside = self.base / "outside.txt"
         self.write(outside, b"Do not touch.\n")
@@ -496,6 +741,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.write_json(self.claude / "plugins" / "installed_plugins.json", {"plugins": {"fixture@local": [{"scope": "user", "installPath": str(plugin)}]}})
         return plugin
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_disabled_plugin_retires_owned_artifacts_and_rollback_restores_them(self):
         plugin = self.plugin_fixture()
         self.apply()
@@ -511,7 +757,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertTrue((plugin / "skills/plugin-example/SKILL.md").is_file())
         self.assertNotIn("plugin-server", tomllib.loads((self.codex / "config.toml").read_text()).get("mcp_servers", {}))
         self.assertEqual(self.plan()[0], [])
-        sync.rollback(Path(result["backup"]), self.codex, self.skills)
+        sync.rollback(Path(result["cleanup_pending"]), self.codex, self.skills)
         self.assertTrue(sync.linked(link))
         self.assertEqual(adapter.read_bytes(), previous)
 

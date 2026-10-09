@@ -31,8 +31,12 @@ the original file object is moved to `quarantine-<path-digest>.bin` in that back
 using `fleet_guards.filesystem.detach_if_matches`. Both content and file identity
 must match. No body enters a report, manifest, or ordinary searchable import as
 part of retirement. No new history writer, journal, lock owner, quarantine service,
-or storage root is introduced. These bytes need the same private retention and
-access controls as existing profile before-images; they are not publishable test
+or storage root is introduced. The run removes its rollback copy, quarantine file
+included, after success or a completed rollback. Interruption or cleanup errors
+can leave files behind; `cleanup_pending` identifies remnants, while
+`recovery_required` identifies material retained after failed automatic rollback.
+While any of these files exist they need the same private access controls as
+existing profile before-images; they are not publishable test
 data. Windows handle exclusion is required for the detach; unsupported platforms
 preserve the source and fail closed.
 
@@ -95,7 +99,8 @@ backup manifest and its before-image; it never invents backup authority. A retry
 of a completed hook requires the retained file's exact original identity and bytes.
 
 Before ordinary rollback restoration, call `archive.preserve_on_rollback(row)`.
-True requires retaining the evidence and reporting `quarantined_memory_evidence`.
+True means the retired copy is not republished and is reported as
+`quarantined_memory_evidence`; the evidence lasts only as long as the rollback copy.
 Install both hooks before declaring `MEMORY_ARCHIVE_HYGIENE_VERSION = 1` on
 `profile_sync`. Standalone `apply_memory_plan` uses the profile transaction and
 refuses a retirement when this integration capability is absent. The full profile
