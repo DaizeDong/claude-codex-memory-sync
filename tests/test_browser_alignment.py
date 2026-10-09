@@ -142,8 +142,9 @@ def test_bom_crlf_multiline_and_fake_args_in_string(tmp_path):
     assert plan_config(claude, codex, [plugin])[0] == merged
 
 
-def test_existing_apply_backups_and_rollback_cover_adoption(tmp_path):
+def test_existing_apply_backups_and_rollback_cover_adoption(tmp_path, monkeypatch):
     import profile_sync as sync
+    monkeypatch.setattr(sync, "_discard_backup", lambda backup: False)  # an interrupted run left its copy
     _, claude, codex, plugin, _, original = browser_home(tmp_path)
     skills = codex.parent / ".agents/skills"
     merged, _ = plan_config(claude, codex, [plugin], adopt_playwright=True)

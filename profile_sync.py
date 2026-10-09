@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tomllib
 
@@ -1009,9 +1010,47 @@ def snapshot_matches(path: Path, current: dict, expected: dict) -> bool:
     return False
 
 
-def rollback(backup: Path, codex: Path, skills: Path) -> dict:
+_REPARSE_POINT = 0x400
+
+
+def _discard_backup(backup: Path) -> bool:
+    """Remove one run's rollback copy once that run no longer needs it.
+
+    The copy exists so a failing apply can put every destination back. It is not a history: it
+    is removed after a successful apply, after a failed apply whose rollback completed, and after
+    an explicit --rollback completed. Only the flat set of regular files this module writes is
+    removed. Anything else (a link, a directory, a reparse point) or an OS error leaves the copy
+    in place and returns False, so the caller reports where it is instead of guessing.
+    """
+    try:
+        entries = list(os.scandir(backup))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    for entry in entries:
+        info = entry.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT:
+            return False
+    try:
+        for entry in entries:
+            os.unlink(entry.path)
+        os.rmdir(backup)
+    except OSError:
+        return False
+    try:
+        os.rmdir(backup.parent)  # the backups root goes too once nothing is left in it
+    except OSError:
+        pass
+    return True
+
+
+def rollback(backup: Path, codex: Path, skills: Path, *, discard: bool = True) -> dict:
     with destination_lock(codex, skills):
-        return _rollback_locked(backup, codex, skills)
+        result = _rollback_locked(backup, codex, skills)
+        if discard and not _discard_backup(backup):
+            result["backup_kept"] = str(backup)
+        return result
 
 
 def _rollback_locked(backup: Path, codex: Path, skills: Path) -> dict:
@@ -1265,11 +1304,14 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
             report['memory']['delivery'] = memory_outbox.deliver(intent, skills=skills)
             if report['memory']['delivery'].get('unresolved'):
                 report['memory']['status'] = 'partial'
-        report.update(status="applied", backup=str(backup))
-        atomic_write(backup / "report.json", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"))
+        report.update(status="applied")
     except Exception:
+        # The rollback copy is removed only once the rollback has completed. If the rollback
+        # itself fails, the copy stays: it is then the only way back (--rollback <path>).
         rollback(backup, codex, skills)
         raise
+    if not _discard_backup(backup):
+        report["backup"] = str(backup)
     return report
 
 
@@ -1320,9 +1362,9 @@ def main(argv=None):
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
     parser.add_argument("--skills-home", type=Path, default=Path.home() / ".agents/skills")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply", action="store_true", help="Apply changes after backup (default is zero-write preview)")
+    mode.add_argument("--apply", action="store_true", help="Apply changes behind a rollback copy that is removed when the run ends (default is zero-write preview)")
     mode.add_argument("--dry-run", action="store_true", help="Explicit zero-write preview")
-    mode.add_argument("--rollback", type=Path, help="Restore unchanged config/files from a backup; never delete memory notes")
+    mode.add_argument("--rollback", type=Path, help="Restore unchanged config/files from a rollback copy left by an interrupted run, then remove it; never delete memory notes")
     parser.add_argument("--json", action="store_true", help="Print catalog and compatibility metadata without workflow bodies")
     parser.add_argument("--repair-links", action="store_true", help="Plan recovery of broken links with exact previously owned approved sources")
     parser.add_argument("--approved-repo", action="append", type=Path, default=[], help="Additional authoritative local skill checkout (repeatable)")
@@ -1363,8 +1405,9 @@ def main(argv=None):
                 print("Memory:", report["memory"]["status"], "files:", report["memory"]["selected_files"])
                 print("MCP:", dict((status, sum(r["status"] == status for r in report["config"]["mcp"])) for status in sorted({r["status"] for r in report["config"]["mcp"]})))
                 print("Use --json for conflicts, skipped sources, and compatibility details.")
-            if "backup" in report:
-                print("Backup/report:", report["backup"])
+            kept = report.get("backup") or report.get("backup_kept")
+            if kept:
+                print("Rollback copy kept (could not be removed):", kept)
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
         # JSON/TOML parse errors may quote secrets from the input: print type only.

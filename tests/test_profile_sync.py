@@ -58,6 +58,7 @@ class ProfileSyncTests(unittest.TestCase):
             sync.build_plan(self.claude, self.codex, self.skills)
         self.assertTrue(adapter.is_file())
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_legacy_backup_link_snapshot_still_rolls_back(self):
         source = self.source_skill()
         target = self.skills / "example"
@@ -214,6 +215,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertEqual(sync.apply_plan(changes, report, self.codex, self.skills)["status"], "no_changes")
         self.assertEqual(self.tree(), after)
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_rollback_restores_config_and_keeps_memory_notes_and_source_junction(self):
         original = self.existing_config()
         native = self.native_skill()
@@ -278,6 +280,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.junction(source_link, second)
         return first, second, source_link, state, before_state
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_managed_skill_upgrade_relinks_and_rollback_restores_previous_link(self):
         first, second, source_link, state, before_state = self.prepare_upgrade()
         first_contents, second_contents = self.tree(first), self.tree(second)
@@ -363,6 +366,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertEqual((self.codex / "config.toml").read_bytes(), customized)
         self.assertFalse((self.codex / "AGENTS.md").exists())
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_rollback_preserves_files_changed_after_apply(self):
         self.existing_config()
         report = self.apply()
@@ -415,20 +419,72 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertTrue((second / "SKILL.md").exists())
         self.assertEqual(self.tree(self.claude), before)
 
-    def test_final_report_write_failure_rolls_back_config(self):
+    def backup_root(self):
+        return self.codex / "claude-sync" / "backups"
+
+    def test_successful_apply_leaves_no_rollback_copy(self):
+        # The owner keeps no backup copies: the copy exists only while the run can still fail.
+        self.existing_config()
+        report = self.apply()
+        self.assertEqual(report["status"], "applied")
+        self.assertNotIn("backup", report)
+        self.assertFalse(self.backup_root().exists())
+
+    def test_failed_apply_rolls_back_then_removes_its_copy(self):
         original = self.existing_config()
         changes, report = self.plan()
         real_write = sync.atomic_write
 
-        def fail_report(path, data):
-            if path.name == "report.json":
-                raise OSError("Synthetic final report failure")
+        def fail_config(path, data):
+            if path.name == "config.toml":
+                raise OSError("Synthetic publication failure")
             real_write(path, data)
 
-        with patch.object(sync, "atomic_write", side_effect=fail_report):
+        with patch.object(sync, "atomic_write", side_effect=fail_config):
             with self.assertRaises(OSError):
                 sync.apply_plan(changes, report, self.codex, self.skills)
         self.assertEqual((self.codex / "config.toml").read_bytes(), original)
+        self.assertFalse(self.backup_root().exists())
+
+    def test_failed_rollback_keeps_the_copy_for_manual_recovery(self):
+        self.existing_config()
+        changes, report = self.plan()
+        real_write = sync.atomic_write
+
+        def fail_config(path, data):
+            if path.name == "config.toml":
+                raise OSError("Synthetic publication failure")
+            real_write(path, data)
+
+        def broken_rollback(*args, **kwargs):
+            raise ValueError("Synthetic rollback failure")
+
+        with patch.object(sync, "atomic_write", side_effect=fail_config), \
+                patch.object(sync, "_rollback_locked", side_effect=broken_rollback):
+            with self.assertRaises(ValueError):
+                sync.apply_plan(changes, report, self.codex, self.skills)
+        kept = list(self.backup_root().iterdir())
+        self.assertEqual(len(kept), 1)
+        self.assertTrue((kept[0] / "manifest.json").is_file())
+
+    def test_manual_rollback_of_a_leftover_copy_removes_it(self):
+        original = self.existing_config()
+        with patch.object(sync, "_discard_backup", new=lambda backup: False):
+            report = self.apply()
+        backup = Path(report["backup"])
+        self.assertTrue(backup.is_dir())
+        sync.rollback(backup, self.codex, self.skills)
+        self.assertEqual((self.codex / "config.toml").read_bytes(), original)
+        self.assertFalse(backup.exists())
+        self.assertFalse(self.backup_root().exists())
+
+    def test_discard_leaves_a_copy_with_unexpected_entries_in_place(self):
+        backup = self.backup_root() / "synthetic-run"
+        (backup / "nested").mkdir(parents=True)
+        self.write(backup / "manifest.json", b"{}")
+        self.assertFalse(sync._discard_backup(backup))
+        self.assertTrue((backup / "manifest.json").is_file())
+        self.assertTrue(sync._discard_backup(self.backup_root() / "absent"))
 
     def test_output_home_junction_is_rejected_without_writes(self):
         make_profile_hook_source(self.claude, sys.executable)
@@ -461,6 +517,7 @@ class ProfileSyncTests(unittest.TestCase):
             sync.apply_plan(changes, report, self.codex, self.skills)
         self.assertEqual(self.tree(outside), before)
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_rollback_rejects_manifest_paths_outside_destination_roots(self):
         report = self.apply()
         backup = Path(report["backup"])
@@ -496,6 +553,7 @@ class ProfileSyncTests(unittest.TestCase):
         self.write_json(self.claude / "plugins" / "installed_plugins.json", {"plugins": {"fixture@local": [{"scope": "user", "installPath": str(plugin)}]}})
         return plugin
 
+    @patch.object(sync, "_discard_backup", new=lambda backup: False)  # an interrupted run left its copy
     def test_disabled_plugin_retires_owned_artifacts_and_rollback_restores_them(self):
         plugin = self.plugin_fixture()
         self.apply()

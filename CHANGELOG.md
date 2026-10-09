@@ -13,6 +13,15 @@ All notable changes to this project are documented here (Keep a Changelog style)
   retirement is ownership-checked, and scheduler success is recorded only after
   verification. Tests use synthetic temporary trees.
 
+### Changed
+
+- An applying run no longer keeps its rollback copy under `claude-sync/backups/`.
+  The copy is removed when the run succeeds and when a failed run has finished
+  rolling back; only a run that stopped before cleanup (or whose rollback failed)
+  leaves it, and `--rollback` removes it once restored. Successful runs used to
+  leave one directory per run, which accumulated without bound. Retired memory
+  copies are no longer retained after the run; their Claude source is the record.
+
 ### Fixed
 
 - Cross-home remapping re-hashes intact ownership markers in every artifact file,
