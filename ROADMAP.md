@@ -6,12 +6,13 @@ Original PowerShell converter release: **v1.0.0**.
 
 ## Current capabilities
 
-Feature names only. Why each one behaves the way it does lives in `README.md`, and what
-changed lives in `CHANGELOG.md`.
+Operating behavior and rationale are in [README.md](README.md); release history
+is in [CHANGELOG.md](CHANGELOG.md).
 
 - Full profile sync through `sync-all.cmd`: skills, instruction adapters and native
   roles, the managed `AGENTS.md` block, a project-document fallback, compatible MCP
-  definitions, project memory archives, and a hooks inventory.
+  definitions, project memory archives, and reviewed SessionStart, PostToolUse
+  and Stop hook adapters with unsupported commands reported.
 - Three modes on every run: preview, JSON preview, and apply behind a local backup.
 - Backup and rollback per applying run, restoring only the files and links whose current
   state still matches what that run wrote.
@@ -33,18 +34,15 @@ changed lives in `CHANGELOG.md`.
 
 ## Planned
 
-- **A tested target beyond Windows PowerShell 5.1.** The memory-only bridge is written
-  for it and is tested only there. PowerShell 7 and non-Windows hosts are neither
-  supported nor measured, which is a claim about testing rather than about the language.
-- **A second machine.** Skills are linked and adapted scripts point at their original
-  installation, so the result is a same-machine bridge. Making it portable means deciding
-  what a copy of a link should even mean.
-- **Hooks beyond the two reviewed adapters.** Everything else in the Claude hooks
-  inventory is reported as needing protocol review, which is honest and is also the
-  largest untranslated surface.
-- **A remote MCP server that is actually probed.** Local HTTP servers are initialized
-  without invoking tools, stdio commands are checked for presence only, and a remote
-  server is marked `not_checked` rather than pretended about.
-- **Credential detection stronger than a heuristic.** The current checks block a batch on
-  likely private keys and access tokens. They are not a complete secret scanner, and the
-  dry-run review still carries part of the load.
+- **Additional tested platforms.** The memory-only bridge is tested on Windows
+  PowerShell 5.1. PowerShell 7 and non-Windows hosts are not supported or measured.
+- **Cross-machine portability.** Linked skills and adapted scripts currently
+  depend on the source installation; portability needs explicit copying and
+  dependency rules.
+- **Additional reviewed hook adapters.** Commands outside the reviewed
+  SessionStart, PostToolUse and Stop adapters require protocol review. Native
+  discovery, trust and actual invocation remain separate acceptance checks.
+- **Remote MCP probing.** Local HTTP servers are initialized without tool calls,
+  stdio commands are checked for presence, and remote servers remain `not_checked`.
+- **Stronger credential detection.** Current private-key and access-token checks
+  are heuristic; input hygiene and dry-run review remain required.

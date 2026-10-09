@@ -46,8 +46,8 @@ qualify plugin names. Role execution and model routing are unchanged by T07.
 ## Producer prerequisite
 
 The dependency is pinned to the `skill-smith==0.2.0` consumer interface.
-The installed 0.1.3 catalog needs the staged additive T07 producer changes before
-this integration can run. `discover_profile` requires
+The original T07 review used an installed 0.1.3 catalog plus staged additive
+producer changes; that scratch validation did not establish installed support. `discover_profile` requires
 the producer capability names `workflow_roots`, `plugin_descriptors`, and
 `plugin_metadata_paths`, and fails visibly when they are missing.
 
@@ -58,7 +58,7 @@ one and all existing status dimensions. The proposal and before hashes are kept
 in the ignored T07 producer candidate directory for the producer owner to review.
 SYNC does not load that directory in production and contains no fallback parser.
 
-After the producer owner accepts the interface and its version, run:
+After verifying the installed producer provides the pinned interface, run:
 
 ```powershell
 ..\.venv\Scripts\python.exe -m pytest tests/test_profile_catalog.py tests/test_profile_inventory.py tests/test_profile_agents.py tests/test_profile_sync.py -q -p no:cacheprovider
