@@ -67,7 +67,7 @@ The current index identifies the active source snapshot. The archive planner ret
 
 ### Rollback copy
 
-Before an applying run changes anything, it copies the manifest and the original bytes of every destination it will change to `~/.codex/claude-sync/backups/<run-id>` (or the selected Codex home). That copy exists only for the run: it is removed when the run succeeds, and when a failed run has finished rolling itself back, so nothing accumulates. Only a run that stopped before it could clean up (a killed process, or a rollback that itself failed) leaves its copy behind, and the run reports the path when a copy could not be removed. Restore from such a copy with:
+Before an applying run changes anything, it copies the manifest and the original bytes of every destination it will change to `~/.codex/claude-sync/backups/<run-id>` (or the selected Codex home). That copy exists only for the run: it is removed when the run succeeds, when a failed run has finished rolling itself back, and when writing the copy itself fails (nothing has been changed yet at that point), so nothing accumulates. Only a run that stopped before it could clean up (a killed process, or a rollback that itself failed) leaves its copy behind, and the run reports the path when a copy could not be removed. Restore from such a copy with:
 
 ```powershell
 .\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json

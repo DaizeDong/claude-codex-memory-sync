@@ -24,6 +24,10 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Fixed
 
+- A failure while the rollback copy is still being written (a destination edited
+  after planning, a write error, a refused memory outbox preparation) removes the
+  partial copy instead of leaving it under `claude-sync/backups/`; nothing has been
+  published at that point, so no destination needs it.
 - Cross-home remapping re-hashes intact ownership markers in every artifact file,
   not only `AGENTS.md`, `SKILL.md` and `*.toml`. Verification already checks the
   markers of routed alternatives (`alternatives/<name>/ENTRYPOINT.md`), so a

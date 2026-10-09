@@ -1117,6 +1117,27 @@ def verify_source(row: dict):
             raise ValueError("Recovery source changed during planning; rerun sync")
 
 
+def _write_rollback_copy(backup: Path, changes: list, intent, codex: Path, skills: Path):
+    """Back up and verify every destination before changing any destination."""
+    manifest = {"codex_home": str(codex), "skills_home": str(skills), "changes": []}
+    if intent:
+        manifest['memory_notes'] = [str(codex / 'memories/extensions/ad_hoc/notes' / f"claude-memory-{intent.record['increment_id']}.md")]
+    for i, row in enumerate(changes):
+        path = Path(row["path"])
+        if snapshot(path) != row["before"]:
+            raise ValueError("Destination changed during planning; rerun sync")
+        entry = {k: v for k, v in row.items() if k not in {
+            "data", "overlay_check", "overlay_dependencies", "overlay_ownership_before", "required_overlay_checks"}}
+        if row["before"]["kind"] == "file":
+            entry["backup_file"] = f"{i:05d}.bin"
+            data = path.read_bytes()
+            if digest(data) != row["before"]["sha256"]:
+                raise ValueError("Destination changed while backing up; rerun sync")
+            atomic_write(backup / entry["backup_file"], data)
+        manifest["changes"].append(entry)
+    atomic_write(backup / "manifest.json", json.dumps(manifest, indent=2).encode())
+
+
 def apply_plan(changes: list, report: dict, codex: Path, skills: Path):
     runtime_overlays.require_valid_selection(report)
     with destination_lock(codex, skills):
@@ -1237,29 +1258,19 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
     backup = codex / "claude-sync/backups" / stamp
     assert_plain_path(backup)
     backup.mkdir(parents=True)
-    manifest = {"codex_home": str(codex), "skills_home": str(skills), "changes": []}
-    if intent:
-        manifest['memory_notes'] = [str(codex / 'memories/extensions/ad_hoc/notes' / f"claude-memory-{intent.record['increment_id']}.md")]
-
-    # Back up and verify every destination before changing any destination.
-    for i, row in enumerate(changes):
-        path = Path(row["path"])
-        if snapshot(path) != row["before"]:
-            raise ValueError("Destination changed during planning; rerun sync")
-        entry = {k: v for k, v in row.items() if k not in {
-            "data", "overlay_check", "overlay_dependencies", "overlay_ownership_before", "required_overlay_checks"}}
-        if row["before"]["kind"] == "file":
-            entry["backup_file"] = f"{i:05d}.bin"
-            data = path.read_bytes()
-            if digest(data) != row["before"]["sha256"]:
-                raise ValueError("Destination changed while backing up; rerun sync")
-            atomic_write(backup / entry["backup_file"], data)
-        manifest["changes"].append(entry)
-    atomic_write(backup / "manifest.json", json.dumps(manifest, indent=2).encode())
-    if intent:
-        memory_outbox.prepare(intent, skills=skills)
-    elif conflict:
-        memory_outbox.preserve_conflict(codex, conflict, skills=skills)
+    try:
+        _write_rollback_copy(backup, changes, intent, codex, skills)
+        if intent:
+            memory_outbox.prepare(intent, skills=skills)
+        elif conflict:
+            memory_outbox.preserve_conflict(codex, conflict, skills=skills)
+    except Exception:
+        # Nothing has been published yet, so no destination needs this copy: a failure while it
+        # is being written (a destination edited since planning, a full disk, a refused memory
+        # outbox) must not leave a half-written copy behind under claude-sync/backups. A killed
+        # process (BaseException) keeps the documented "stopped before cleanup" behaviour.
+        _discard_backup(backup)
+        raise
     try:
         # Native delivery follows all reversible profile/archive changes.
         replacement_members = {raw for group in dependency_groups.values() for raw in group['members']}

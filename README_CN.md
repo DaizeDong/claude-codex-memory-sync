@@ -66,7 +66,7 @@ python -m pip install -r requirements-dev.txt
 
 ### 回滚副本
 
-应用运行在改动任何目标之前，会把清单和每个将被改动目标的原始字节复制到 `~/.codex/claude-sync/backups/<run-id>`；指定了其他 Codex home 时使用对应位置。这份副本只为本次运行存在：运行成功后删除，运行失败并回滚完成后也删除，不会逐次累积。只有来不及清理就停下的运行（进程被杀，或回滚本身失败）会留下副本，删不掉时运行结果会给出路径。从这样的副本恢复：
+应用运行在改动任何目标之前，会把清单和每个将被改动目标的原始字节复制到 `~/.codex/claude-sync/backups/<run-id>`；指定了其他 Codex home 时使用对应位置。这份副本只为本次运行存在：运行成功后删除，运行失败并回滚完成后也删除，写副本这一步本身失败时（此时还没改动任何目标）同样删除，不会逐次累积。只有来不及清理就停下的运行（进程被杀，或回滚本身失败）会留下副本，删不掉时运行结果会给出路径。从这样的副本恢复：
 
 ```powershell
 .\sync-all.cmd --rollback "$env:USERPROFILE\.codex\claude-sync\backups\RUN_ID" --json

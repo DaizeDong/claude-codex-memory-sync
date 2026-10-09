@@ -467,6 +467,45 @@ class ProfileSyncTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertTrue((kept[0] / "manifest.json").is_file())
 
+    def test_failure_while_writing_the_rollback_copy_leaves_no_partial_copy(self):
+        # A failure before anything is published (here: the copy's manifest cannot be written,
+        # after the per-destination payloads already were) must not strand a half-written copy.
+        original = self.existing_config()
+        self.source_skill()
+        changes, report = self.plan()
+        self.assertTrue(any(row["before"]["kind"] == "file" for row in changes))
+        real_write = sync.atomic_write
+        written = []
+
+        def fail_manifest(path, data):
+            if path.parent.parent == self.backup_root():
+                written.append(path.name)
+                if path.name == "manifest.json":
+                    raise OSError("Synthetic disk full while writing the rollback copy")
+            real_write(path, data)
+
+        with patch.object(sync, "atomic_write", side_effect=fail_manifest):
+            with self.assertRaises(OSError):
+                sync.apply_plan(changes, report, self.codex, self.skills)
+        self.assertIn("manifest.json", written)
+        self.assertTrue(any(name.endswith(".bin") for name in written))
+        self.assertEqual((self.codex / "config.toml").read_bytes(), original)
+        self.assertFalse(self.backup_root().exists())
+
+    def test_destination_edited_after_planning_leaves_no_partial_copy(self):
+        self.existing_config()
+        self.source_skill()
+        changes, report = self.plan()
+        late = [row for row in changes if row["before"]["kind"] == "file"]
+        self.assertTrue(late)
+        # Edit the last backed-up destination so earlier payloads are already in the copy.
+        edited = Path(late[-1]["path"])
+        self.write(edited, edited.read_bytes() + b"# synthetic user edit after planning\n")
+        with self.assertRaises(ValueError):
+            sync.apply_plan(changes, report, self.codex, self.skills)
+        self.assertIn(b"synthetic user edit after planning", edited.read_bytes())
+        self.assertFalse(self.backup_root().exists())
+
     def test_manual_rollback_of_a_leftover_copy_removes_it(self):
         original = self.existing_config()
         with patch.object(sync, "_discard_backup", new=lambda backup: False):
