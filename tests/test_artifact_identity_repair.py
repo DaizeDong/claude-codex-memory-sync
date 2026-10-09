@@ -268,3 +268,45 @@ def test_retired_member_recreation_and_file_link_alias_refused():
     assert owner.verify_members(original, home=HOME)["status"] == "conflict"
     original, _, _ = group()
     assert owner.verify_members(original, home=HOME, links={".CODEX/Z.TXT": {"kind": "link"}})["status"] == "conflict"
+
+
+def adapter_document(body):
+    return body + b"\n<!-- claude-profile-sync:adapter sha256=" + owner.digest(body).encode() + b" -->\n"
+
+
+@pytest.mark.parametrize("name", ["ENTRYPOINT.md", "notes.md"])
+def test_adapter_marker_outside_named_documents_is_rehashed_after_home_mapping(name):
+    """A routed alternative is written as alternatives/<x>/ENTRYPOINT.md with an adapter marker whose body
+    names home paths. Verification checks the markers of every artifact file, but the remap only re-hashed
+    files named AGENTS.md / SKILL.md / *.toml, so mapping a snapshot to another home broke exactly these
+    markers and the whole artifact group was refused (2026-10-09 restore rehearsal)."""
+    rel = ".agents/skills/llmcall-tasks/alternatives/synthetic-0123456789ab/" + name
+    data = adapter_document(b"Run with " + HOME.encode() + b"/.agents/skills/synthetic/payload\n")
+    items = {HOME + "/" + rel: {"owner": owner.OWNER, "source": HOME + "/source/synthetic",
+                                "source_id": "synthetic:adapter",
+                                "original": {"kind": "file", "sha256": owner.digest(data)}}}
+    original = {rel: data, MANIFEST: json.dumps({"version": 1, "items": items}).encode()}
+    assert owner.verify_members(original, home=HOME)["status"] == "verified"
+    mapping = {HOME: "D:/Target"}
+    changed = {k: owner.map_paths(v, mapping) for k, v in original.items()}
+    assert changed[rel] != data  # the body really carries a home path
+    result, conflicts = owner.remap_members(original, changed, home=HOME, path_mapping=mapping)
+    assert not conflicts
+    assert b"D:/Target/.agents" in result[rel]
+    assert owner.verify_members(result, home="D:/Target")["status"] == "verified"
+
+
+def test_tampered_adapter_document_is_still_refused():
+    rel = ".agents/skills/llmcall-tasks/alternatives/synthetic-0123456789ab/ENTRYPOINT.md"
+    data = adapter_document(b"Run with " + HOME.encode() + b"/payload\n")
+    tampered = data.replace(b"Run with", b"Run without")
+    items = {HOME + "/" + rel: {"owner": owner.OWNER, "source": HOME + "/source/synthetic",
+                                "source_id": "synthetic:adapter",
+                                "original": {"kind": "file", "sha256": owner.digest(tampered)}}}
+    original = {rel: tampered, MANIFEST: json.dumps({"version": 1, "items": items}).encode()}
+    assert owner.verify_members(original, home=HOME)["status"] == "conflict"
+    mapping = {HOME: "D:/Target"}
+    changed = {k: owner.map_paths(v, mapping) for k, v in original.items()}
+    result, conflicts = owner.remap_members(original, changed, home=HOME, path_mapping=mapping)
+    assert conflicts
+    assert owner.verify_members(result, home="D:/Target")["status"] == "conflict"
