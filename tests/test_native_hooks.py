@@ -66,6 +66,22 @@ def members(codex):
             for p in (codex / "hooks.json", codex / "imports/claude-hooks/stop_bridge.py", codex / "imports/claude-hooks/manifest.json")}
 
 
+def test_missing_storage_dependency_preserves_existing_stop_handler(tmp_path):
+    _, claude, codex, roots, _ = fixture(tmp_path, events=("Stop",), plugin=False)
+    script = claude / "scripts/pw-auth.py"
+    put(script, script.read_text(encoding="utf-8") + "\nimport pw_storage_paths\n")
+    helper = claude / "scripts/pw_storage_paths.py"
+    put(helper, "# Synthetic storage helper.\n")
+    apply(plan_hooks(claude, codex, plugin_roots=roots)[0])
+    before = members(codex)
+    helper.unlink()
+    outputs, report = plan_hooks(claude, codex, plugin_roots=roots)
+    assert outputs == {}
+    assert any(row.get("reason") == "reviewed_script_dependency_missing" and row["status"] == "unavailable"
+               for row in report["hooks"])
+    assert members(codex) == before
+
+
 def test_native_events_share_one_owned_group_and_recognized_timeouts(tmp_path):
     _, claude, codex, roots, capture = fixture(tmp_path)
     outputs, report = plan_hooks(claude, codex, plugin_roots=roots)
@@ -333,7 +349,8 @@ def test_actual_document_source_retains_watermark_and_globs(tmp_path):
     assert "synthetic original" not in lock.read_text()
 
 
-def test_actual_start_guard_is_readonly_and_dependency_drift_is_rejected(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dependency_name", ["pw-auth.py", "pw_storage_paths.py"])
+def test_actual_start_guard_is_readonly_and_dependency_drift_is_rejected(tmp_path, monkeypatch, dependency_name):
     configured = os.environ.get("PROFILE_BRIDGE_TEST_SCRIPTS")
     if not configured:
         pytest.skip("source-helper integration requires PROFILE_BRIDGE_TEST_SCRIPTS")
@@ -341,24 +358,26 @@ def test_actual_start_guard_is_readonly_and_dependency_drift_is_rejected(tmp_pat
     if not (scripts / "pw_isolation_guard.py").is_file():
         pytest.skip("adjacent source worktree unavailable")
     home, claude, codex, _, _ = fixture(tmp_path, events=("SessionStart",), plugin=False)
-    for name in ("pw_isolation_guard.py", "pw-auth.py"):
+    for name in ("pw_isolation_guard.py", "pw-auth.py", "pw_storage_paths.py"):
         (claude / "scripts" / name).write_bytes((scripts / name).read_bytes())
     for variable in ("HOME", "USERPROFILE"):
         monkeypatch.setenv(variable, str(home))
+    monkeypatch.setenv("PW_AUTH_CONFIG", str(home / "private-browser"))
+    monkeypatch.setenv("PW_MCP_OUTPUT_DIR", str(home / "browser-output"))
     state = '{"cookies":[],"origins":[]}'
-    put(home / ".pw-auth/store/synthetic.json", state)
-    put(home / ".pw-auth/shared.json", state)
-    put(home / ".pw-auth/incoming/pending.json", state)
+    put(home / "private-browser/store/synthetic.json", state)
+    put(home / "private-browser/shared.json", state)
+    put(home / "private-browser/incoming/pending.json", state)
     put(claude / "plugins/cache/example/plugin/stale/keep.txt", "keep")
     put(codex / "config.toml", '[mcp_servers.playwright]\ncommand="npx"\nargs=' + json.dumps([
-        "@playwright/mcp@latest", "--isolated", "--storage-state", str(home / ".pw-auth/shared.json"),
-        "--output-dir", str(home / ".playwright-mcp-output")]))
+        "@playwright/mcp@latest", "--isolated", "--storage-state", str(home / "private-browser/shared.json"),
+        "--output-dir", str(home / "browser-output")]))
     apply(plan_hooks(claude, codex)[0])
-    before = {str(p): p.read_bytes() for base in (home / ".pw-auth", claude / "plugins") for p in base.rglob("*") if p.is_file()}
+    before = {str(p): p.read_bytes() for base in (home / "private-browser", claude / "plugins") for p in base.rglob("*") if p.is_file()}
     output = run(codex, "SessionStart")
     assert "systemMessage" not in output
-    assert before == {str(p): p.read_bytes() for base in (home / ".pw-auth", claude / "plugins") for p in base.rglob("*") if p.is_file()}
-    dependency = claude / "scripts/pw-auth.py"
+    assert before == {str(p): p.read_bytes() for base in (home / "private-browser", claude / "plugins") for p in base.rglob("*") if p.is_file()}
+    dependency = claude / "scripts" / dependency_name
     dependency.write_bytes(dependency.read_bytes() + b"\nraise Exception('synthetic-secret')\n")
     output = run(codex, "SessionStart")
     assert "failed" in json.dumps(output) and "synthetic-secret" not in json.dumps(output)
