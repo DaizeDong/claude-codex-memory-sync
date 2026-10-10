@@ -29,7 +29,7 @@ def startup_request(claude, codex=None, skills=None, *, approved_repos=(),
     if external_manifest is None:
         config = os.environ.get("CLAUDE_CONFIG_REPO")
         if config:
-            external_manifest = Path(config) / "external-skill-repos.json"
+            external_manifest = Path(config) / "restore" / "external-skill-repos.json"
     approved = [str(home), *(str(Path(p).absolute()) for p in approved_repos)]
     request = {
         "profile_home": str(home),

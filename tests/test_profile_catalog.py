@@ -53,7 +53,7 @@ class CatalogIntegrationTests(unittest.TestCase):
         with patch.dict("os.environ", {"CLAUDE_CONFIG_REPO": str(configured)}):
             request = integration.startup_request(self.claude, self.codex, self.skills)
             override = integration.startup_request(self.claude, external_manifest=selected)
-        self.assertEqual(request["external_skill_repos"], str(configured / "external-skill-repos.json"))
+        self.assertEqual(request["external_skill_repos"], str(configured / "restore" / "external-skill-repos.json"))
         self.assertEqual(override["external_skill_repos"], str(selected))
 
     def test_current_external_formulas_aliases_and_installer_survive_projection(self):
