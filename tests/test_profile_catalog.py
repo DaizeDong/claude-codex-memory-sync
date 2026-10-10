@@ -24,6 +24,24 @@ class CatalogIntegrationTests(unittest.TestCase):
     def discover(self, **kwargs):
         return integration.discover_profile(self.claude, self.codex, self.skills, **kwargs)
 
+    def test_absent_optional_workflow_roots_are_not_problems(self):
+        snapshot = self.discover()
+        self.assertEqual([p for p in snapshot["problems"] if p["stage"] == "workflow_roots"], [])
+
+    def test_present_but_unresolvable_workflow_root_is_still_reported(self):
+        sync.make_link(self.claude / "agents", self.base / "missing-agents-target")
+        snapshot = self.discover()
+        reported = [p for p in snapshot["problems"] if p["stage"] == "workflow_roots"]
+        self.assertEqual([p["reason"] for p in reported], ["workflow_root_unavailable"])
+        self.assertEqual(Path(reported[0]["path"]), self.claude / "agents")
+
+    def test_present_workflow_root_is_still_discovered(self):
+        write(self.claude / "agents/fixture-role.md", "---\nname: fixture-role\ndescription: d\n---\nbody\n")
+        snapshot = self.discover()
+        kinds = {r["kind"] for r in snapshot["records"]}
+        self.assertIn("agent_template", kinds)
+        self.assertEqual([p for p in snapshot["problems"] if p["stage"] == "workflow_roots"], [])
+
     def test_external_manifest_requires_an_explicit_binding(self):
         with patch.dict("os.environ", {}, clear=True):
             request = integration.startup_request(self.claude, self.codex, self.skills)

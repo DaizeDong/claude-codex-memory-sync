@@ -1,4 +1,5 @@
 """Sanitized profile health; local MCP initialization is optional and bounded."""
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -37,7 +38,11 @@ def assess(report, mcp_checks=()):
     for area, row in rows:
         if row.get("status") not in PROBLEM_STATUSES:
             continue
-        item = {"area": area, **{k: row[k] for k in ("name", "status", "reason") if k in row}}
+        item = {"area": area, **{k: row[k] for k in ("name", "event", "status", "reason") if k in row}}
+        if isinstance(row.get("reasons"), list):
+            item["reasons"] = sorted(str(reason) for reason in row["reasons"])
+        if area == "memory":
+            item["detail"] = _memory_detail(row)
         (exclusions if row.get("reason") in EXCLUSIONS else findings).append(item)
     for row in report.get("plugins_skipped", []):
         if row.get("reason") != "disabled_in_claude":
@@ -50,7 +55,10 @@ def assess(report, mcp_checks=()):
         section = report.get(area, {})
         if isinstance(section, dict):
             for row in section.get("warnings", []):
-                findings.append({"area": area, "reason": row.get("reason", "reported_warning")})
+                item = {"area": area, "reason": row.get("reason", "reported_warning")}
+                if row.get("source") is not None:
+                    item["source"] = str(row["source"])
+                findings.append(item)
     for row in report.get("config", {}).get("settings", []):
         if row.get("status") == "unsupported":
             exclusions.append({"area": "settings", "key": row.get("key"), "reason": row.get("reason")})
@@ -69,6 +77,71 @@ def assess(report, mcp_checks=()):
                                      "dependency": dependency.get("name"), "reason": "executable_not_found"})
     return {"status": "degraded" if findings else "healthy", "findings": findings,
             "exclusions": exclusions, "mcp_checks": list(mcp_checks)}
+
+
+def _memory_detail(row):
+    """The subjects behind a memory status, so a new skipped file is a new finding."""
+    delivery = row.get("delivery") if isinstance(row.get("delivery"), dict) else {}
+    hygiene = row.get("archive_hygiene") if isinstance(row.get("archive_hygiene"), dict) else {}
+    preserved = hygiene.get("preserved") if isinstance(hygiene.get("preserved"), list) else []
+    # Preserved archive copies are counted by reason, not by file: their number
+    # follows the archive's size, while a new reason is a new kind of state.
+    return {"skipped": sorted([str(x.get("reason")), str(x.get("path"))]
+                              for x in row.get("skipped", []) if isinstance(x, dict)),
+            "delivery_state": delivery.get("delivery_state"),
+            "delivery_unresolved": bool(delivery.get("unresolved")),
+            "archive_preserved": sorted({str(x.get("reason")) for x in preserved if isinstance(x, dict)})}
+
+
+# Accepted findings: a reviewed, private baseline of standing review items.
+# Identity is the finding's kind and subject, never free text; counts make it
+# a multiset, so a third identical unreviewed hook is still a new finding.
+IDENTITY_KEYS = ("area", "status", "reason", "reasons", "name", "event", "source",
+                 "dependency", "key", "detail")
+NEVER_ACCEPTED_AREAS = {"sync"}
+
+
+def finding_identity(item):
+    return json.dumps({k: item[k] for k in IDENTITY_KEYS if k in item},
+                      sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+
+def load_accepted(path):
+    """Read an explicitly supplied baseline; a malformed one is an error, never empty."""
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("accepted"), list):
+        raise ValueError("accepted_findings_schema")
+    accepted = Counter()
+    for entry in data["accepted"]:
+        identity = entry.get("identity") if isinstance(entry, dict) else None
+        count = entry.get("count", 1) if isinstance(entry, dict) else None
+        if not isinstance(identity, dict) or not identity.get("area") or type(count) is not int or count < 1:
+            raise ValueError("accepted_findings_entry")
+        if identity["area"] in NEVER_ACCEPTED_AREAS or set(identity) - set(IDENTITY_KEYS):
+            raise ValueError("accepted_findings_entry")
+        accepted[finding_identity(identity)] += count
+    return accepted
+
+
+def apply_accepted(assessment, accepted):
+    """Return the fields that split findings into accepted and new.
+
+    The status becomes ``accepted`` only when there are findings and none is new.
+    """
+    remaining = Counter(accepted)
+    matched, new = [], []
+    for item in assessment["findings"]:
+        identity = finding_identity(item)
+        if remaining[identity] > 0:
+            remaining[identity] -= 1
+            matched.append(item)
+        else:
+            new.append(item)
+    result = {"accepted_findings": matched, "new_findings": new,
+              "stale_accepted": sorted(k for k, n in remaining.items() if n > 0)}
+    if assessment["findings"] and not new:
+        result["status"] = "accepted"
+    return result
 
 
 class _LocalRedirect(urllib.request.HTTPRedirectHandler):

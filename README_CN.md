@@ -109,7 +109,9 @@ python .\run_profile_sync.py --apply --write-status --probe-mcp
 
 它先应用受管配置，再重新计算计划，检查未解决的冲突和缺失依赖。退出码 `0` 表示检查通过，`2` 表示存在待处理问题或剩余变更，`1` 表示执行失败。JSON 将兼容性排除项与故障分开列出。本地 HTTP MCP 只做初始化，不调用工具；外部服务标为 `not_checked`，stdio 服务只检查启动命令是否存在。
 
-`--write-status` 会在所选 Codex home 下写入 `claude-sync/last-run.json`。运行期间保留上次的 `last-success.json`，只有复查通过才更新成功标记。保留的标记说明的是上次成功运行；任务监控还应检查本次退出码和运行标识。入口不发送消息、不创建任务，由现有调度、监控和备份体系统一管理。
+`--accepted-findings <文件>` 指定一份审过的常驻问题基线，比如因能力未验证而阻塞的 skill、待审的 hook。这份文件放在私有配置里，不能进公开仓。每条是 `{"identity": {...}, "count": n}`，identity 由问题的 area、status、reason 和对象（名称、hook 事件、告警来源、能力原因、被跳过的记忆文件）组成，不看提示文字。所有问题都在基线里时状态为 `accepted`，退出码 `0`。基线之外的问题，包括超出已接受次数的重复项，仍然退出 `2`，并列在 `new_findings` 里。待处理变更不能被接受；基线格式错误按执行失败处理（`1`）。不再命中的条目列在 `stale_accepted`，问题解决后可以从基线里删掉。
+
+`--write-status` 会在所选 Codex home 下写入 `claude-sync/last-run.json`。运行期间保留上次的 `last-success.json`，只有复查通过且状态为 `healthy` 或 `accepted` 才更新成功标记。保留的标记说明的是上次成功运行；任务监控还应检查本次退出码和运行标识。入口不发送消息、不创建任务，由现有调度、监控和备份体系统一管理。
 
 同步和健康检查本身不调用模型。自动化流程需要 agent 时，应通过已有 `llmcall` 接口的 `mode="agent"` 调用，沿用其路由策略。
 

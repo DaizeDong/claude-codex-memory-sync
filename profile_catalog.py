@@ -44,9 +44,13 @@ def startup_request(claude, codex=None, skills=None, *, approved_repos=(),
         "plugin_registries": [{"path": str(claude / "plugins/installed_plugins.json"),
             "settings_path": str(claude / "settings.json"), "client": "claude", "scope": "user",
             "approved_roots": approved}],
+        # Both workflow folders are optional: an absent one declares nothing,
+        # while a present but unreadable or redirected one still reaches the
+        # catalog and reports workflow_root_unavailable.
         "workflow_roots": [{"path": str(claude / folder), "kind": kind,
                             "namespace": "claude-user:" + folder, "client": "claude", "scope": "user"}
-                           for folder, kind in (("commands", "command"), ("agents", "agent_template"))],
+                           for folder, kind in (("commands", "command"), ("agents", "agent_template"))
+                           if os.path.lexists(claude / folder)],
     }
     if external_manifest is not None:
         request["external_skill_repos"] = str(external_manifest)
