@@ -12,6 +12,13 @@ All notable changes to this project are documented here (Keep a Changelog style)
   JSON preview precede apply; each changing apply has backup and rollback,
   retirement is ownership-checked, and scheduler success is recorded only after
   verification. Tests use synthetic temporary trees.
+- `run_profile_sync.py --accepted-findings <file>`: a reviewed private baseline of
+  standing findings, keyed by area, status, reason and subject rather than text.
+  A run whose findings are all accepted exits `0` with status `accepted` and
+  refreshes `last-success.json`; any other finding keeps exit `2` and is listed
+  under `new_findings`. Without the option nothing changes. Findings now carry
+  the hook event, warning source, blocking capability reasons and the skipped
+  memory files, so two findings of one kind on different subjects stay distinct.
 
 ### Changed
 
@@ -37,6 +44,10 @@ All notable changes to this project are documented here (Keep a Changelog style)
   external repository metadata. Removing the hard-coded sibling fallback avoids
   authorizing unapproved link recovery and publishing a machine-specific path;
   the PII gate identified the original path before publication.
+- An absent `~/.claude/commands` or `~/.claude/agents` is no longer declared as a
+  workflow root, so it no longer produces a `workflow_root_unavailable` agents
+  warning on every run. A folder that exists but cannot be resolved (for example
+  a dangling junction) is still declared and still reported.
 
 ### Changed
 
