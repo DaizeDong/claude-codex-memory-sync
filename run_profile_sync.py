@@ -11,14 +11,15 @@ import tomllib
 from profile_sync import (add_runtime_input_arguments, apply_plan, assert_plain_path,
                           atomic_write, build_plan, cleanup_error_context, destination_lock, ensure_external,
                           load_runtime_inputs)
-from profile_health import assess, check_mcp
+from profile_health import apply_accepted, assess, check_mcp, load_accepted
 from profile_bridge.overlays import OMITTED, require_valid_selection, validate_inputs
 
 
 def run(claude, codex, skills, *, apply=False, write_status=False, probe=False,
         request_id=None, scope=None, periodic=False, runtime_policy=OMITTED,
         capabilities=OMITTED, resource_roots=OMITTED, role_equivalence=OMITTED,
-        adopt_playwright=False, reviewed_archive=(), reviewed_scopes=(), route_configured_skills=False):
+        adopt_playwright=False, reviewed_archive=(), reviewed_scopes=(), route_configured_skills=False,
+        accepted_findings=None):
     """Run with optional parsed runtime inputs; file loading belongs to the CLI."""
     # Freeze caller-owned inputs once so verification uses the preview's snapshot.
     try:
@@ -68,6 +69,10 @@ def run(claude, codex, skills, *, apply=False, write_status=False, probe=False,
                 result.update(change_count=len(changes), remaining_changes=verified.get("change_count", 0),
                               report=verified,
                               exit_code=0 if result["status"] == "healthy" else 2)
+                if accepted_findings is not None:
+                    # Reviewed standing findings stay listed; only new ones keep exit 2.
+                    result.update(apply_accepted(result, accepted_findings))
+                    result["exit_code"] = 0 if result["status"] in HEALTHY_STATUSES else 2
             except Exception as exc:
                 # Source parse exceptions may contain secrets. Store the type only.
                 result.update(status="error", error_type=type(exc).__name__, exit_code=1,
@@ -86,6 +91,9 @@ def run(claude, codex, skills, *, apply=False, write_status=False, probe=False,
     return result
 
 
+HEALTHY_STATUSES = {"healthy", "accepted"}
+
+
 def _publish(result, state, success, enabled):
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     if enabled:
@@ -94,9 +102,12 @@ def _publish(result, state, success, enabled):
         if inventory is not None:
             atomic_write(state / "skill-inventory.json", json.dumps(inventory, ensure_ascii=True, indent=2).encode())
         atomic_write(state / "last-run.json", data)
-        if result["status"] == "healthy":
-            atomic_write(success, json.dumps({key: result[key] for key in
-                ("version", "status", "started_at", "finished_at", "remaining_changes")}).encode())
+        if result["status"] in HEALTHY_STATUSES:
+            marker = {key: result[key] for key in
+                      ("version", "status", "started_at", "finished_at", "remaining_changes")}
+            if "accepted_findings" in result:
+                marker["accepted_count"] = len(result["accepted_findings"])
+            atomic_write(success, json.dumps(marker).encode())
 
 
 def main(argv=None):
@@ -110,10 +121,14 @@ def main(argv=None):
     parser.add_argument('--request-id')
     parser.add_argument('--scope', action='append')
     parser.add_argument('--periodic', action='store_true')
+    parser.add_argument('--accepted-findings', type=Path,
+                        help='Private reviewed baseline of standing findings; only findings outside it keep exit 2')
     add_runtime_input_arguments(parser)
     args = parser.parse_args(argv)
     try:
         runtime_args = load_runtime_inputs(args)
+        if args.accepted_findings is not None:
+            runtime_args['accepted_findings'] = load_accepted(args.accepted_findings)
         result = run(*(p.absolute() for p in (args.claude_home, args.codex_home, args.skills_home)),
                      apply=args.apply, write_status=args.write_status, probe=args.probe_mcp,
                      request_id=args.request_id, scope=args.scope, periodic=args.periodic, **runtime_args)
