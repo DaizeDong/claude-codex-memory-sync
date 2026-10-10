@@ -56,8 +56,9 @@ def assess(report, mcp_checks=()):
         if isinstance(section, dict):
             for row in section.get("warnings", []):
                 item = {"area": area, "reason": row.get("reason", "reported_warning")}
-                if row.get("source") is not None:
-                    item["source"] = str(row["source"])
+                for key in ("source", "event"):
+                    if row.get(key) is not None:
+                        item[key] = str(row[key])
                 findings.append(item)
     for row in report.get("config", {}).get("settings", []):
         if row.get("status") == "unsupported":
@@ -84,13 +85,18 @@ def _memory_detail(row):
     delivery = row.get("delivery") if isinstance(row.get("delivery"), dict) else {}
     hygiene = row.get("archive_hygiene") if isinstance(row.get("archive_hygiene"), dict) else {}
     preserved = hygiene.get("preserved") if isinstance(hygiene.get("preserved"), list) else []
-    # Preserved archive copies are counted by reason, not by file: their number
-    # follows the archive's size, while a new reason is a new kind of state.
-    return {"skipped": sorted([str(x.get("reason")), str(x.get("path"))]
-                              for x in row.get("skipped", []) if isinstance(x, dict)),
-            "delivery_state": delivery.get("delivery_state"),
-            "delivery_unresolved": bool(delivery.get("unresolved")),
-            "archive_preserved": sorted({str(x.get("reason")) for x in preserved if isinstance(x, dict)})}
+    # Ordinary archive growth retains the same reasons. Credential findings
+    # require review of each affected file and its exact content hash.
+    detail = {"skipped": sorted([str(x.get("reason")), str(x.get("path"))]
+                                for x in row.get("skipped", []) if isinstance(x, dict)),
+              "delivery_state": delivery.get("delivery_state"),
+              "delivery_unresolved": bool(delivery.get("unresolved")),
+              "archive_preserved": sorted({str(x.get("reason")) for x in preserved if isinstance(x, dict)})}
+    credentials = sorted([str(x.get("reason")), str(x.get("path")), str(x.get("sha256"))]
+                         for x in preserved if isinstance(x, dict) and x.get("credential_findings"))
+    if credentials:
+        detail["archive_credentials"] = credentials
+    return detail
 
 
 # Accepted findings: a reviewed, private baseline of standing review items.
