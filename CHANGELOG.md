@@ -19,6 +19,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
   under `new_findings`. Without the option nothing changes. Findings now carry
   the hook event, warning source, blocking capability reasons and the skipped
   memory files, so two findings of one kind on different subjects stay distinct.
+  Hook warnings also retain their event. Preserved archive files with credential
+  findings require identities containing their reason, path and SHA256; a clean
+  archive baseline cannot accept new credential findings or changed risky files.
 
 ### Changed
 

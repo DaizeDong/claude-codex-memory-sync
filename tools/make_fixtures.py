@@ -526,3 +526,38 @@ def make_retirement_backup(codex, row):
         'changes': [stored],
     }))
     return backup
+
+
+def make_accepted_hook_warnings(home, malformed):
+    """Produce equal-count warnings for two different synthetic hook events."""
+    import json
+    import profile_hooks
+
+    home = Path(home)
+    claude, codex = home / 'claude', home / 'codex'
+    claude.mkdir(parents=True)
+    reports = []
+    for event in ('SessionStart', 'Stop'):
+        groups = {} if malformed == 'groups' else [{'hooks': {}}]
+        (claude / 'settings.json').write_text(json.dumps({'hooks': {event: groups}}), encoding='utf-8')
+        _, report = profile_hooks.plan_hooks(claude, codex)
+        reports.append(report)
+    return reports
+
+
+def make_accepted_archive_reports(home):
+    """Produce clean, risky, changed and relocated unowned archive reports."""
+    fixture = make_archive_hygiene(home)
+    destination = fixture['destination'].with_name('legacy.md')
+    reports = {}
+    for name, payload in (
+        ('clean', fixture['payloads']['edited']),
+        ('risk', fixture['payloads']['risk']),
+        ('changed', fixture['payloads']['risk'] + b'# Changed synthetic content\n'),
+    ):
+        destination.write_bytes(payload)
+        _, reports[name] = memory.plan_memory(fixture['claude'], fixture['codex'])
+    destination.write_bytes(fixture['payloads']['edited'])
+    destination.with_name('other.md').write_bytes(fixture['payloads']['risk'])
+    _, reports['relocated'] = memory.plan_memory(fixture['claude'], fixture['codex'])
+    return reports

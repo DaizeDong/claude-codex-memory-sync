@@ -114,6 +114,8 @@ It applies the managed profile, recomputes the plan, and evaluates conflicts and
 
 `--write-status` writes `claude-sync/last-run.json` under the selected Codex home. It preserves the previous `last-success.json` during a run and refreshes it only after verification passes with status `healthy` or `accepted`. A retained marker describes the previous successful run; the scheduler must also check the current exit code and run identity. The runner does not send messages or create scheduled tasks; connect it to the existing scheduler, task monitor and backup registration.
 
+Hook warning identities include the event. Preserved archive copies normally retain only their distinct preservation reasons, so ordinary growth of the same kind stays accepted. If a preserved copy has credential findings, its reason, path and SHA256 also enter `detail.archive_credentials`. New credential findings, changed contents or a different affected file require review. Older baselines without these subject fields do not accept those findings.
+
 The profile transform and health checks do not call a model. Automation that adds agent work should invoke the operator's `llmcall` interface with `mode="agent"`, inheriting its provider policy rather than embedding a second routing chain.
 
 ### Profile bridge tests

@@ -113,6 +113,8 @@ python .\run_profile_sync.py --apply --write-status --probe-mcp
 
 `--write-status` 会在所选 Codex home 下写入 `claude-sync/last-run.json`。运行期间保留上次的 `last-success.json`，只有复查通过且状态为 `healthy` 或 `accepted` 才更新成功标记。保留的标记说明的是上次成功运行；任务监控还应检查本次退出码和运行标识。入口不发送消息、不创建任务，由现有调度、监控和备份体系统一管理。
 
+hook 告警的 identity 也包含事件名。保留的归档副本通常只按不同的保留原因区分，同类副本增加仍可沿用原基线。若某个副本检出凭据特征，它的原因、路径和 SHA256 还会进入 `detail.archive_credentials`；新增凭据问题、内容变化或涉及另一个文件，都需要重新审查。缺少这些对象字段的旧基线不能接受相应问题。
+
 同步和健康检查本身不调用模型。自动化流程需要 agent 时，应通过已有 `llmcall` 接口的 `mode="agent"` 调用，沿用其路由策略。
 
 ### 完整配置测试

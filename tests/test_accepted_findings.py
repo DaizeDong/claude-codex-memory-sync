@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import profile_health as health
 import run_profile_sync as runner
+from tools.make_fixtures import make_accepted_archive_reports, make_accepted_hook_warnings
 
 
 def report():
@@ -123,6 +124,55 @@ class AcceptedFindingsTests(unittest.TestCase):
                 result = runner.run(root/"claude", root/"codex", root/"skills", apply=True, write_status=True)
             self.assertEqual((result["exit_code"], result["status"]), (2, "degraded"))
             self.assertNotIn("new_findings", result)
+
+    def test_hook_warning_on_different_event_requires_review(self):
+        for malformed in ('groups', 'entries'):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                previous, current = make_accepted_hook_warnings(root / 'fixture', malformed)
+                r = report()
+                r['hooks'] = previous
+                entries = [{'identity': item} for item in health.assess(r)['findings']]
+                rc, _, success = self.run_main(root, r, entries)
+                self.assertEqual(rc, 0)
+                marker = success.read_bytes()
+                r['hooks'] = current
+                rc, last, _ = self.run_main(root, r, entries)
+                self.assertEqual(rc, 2)
+                self.assertEqual([item['event'] for item in last['new_findings']], ['Stop'])
+                self.assertEqual(success.read_bytes(), marker)
+
+    def test_preserved_archive_credential_risk_requires_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshots = make_accepted_archive_reports(root / 'fixture')
+            r = report()
+            r['memory'] = snapshots['clean']
+            entries = [{'identity': item} for item in health.assess(r)['findings']]
+            rc, _, success = self.run_main(root, r, entries)
+            self.assertEqual(rc, 0)
+            marker = success.read_bytes()
+            r['memory'] = snapshots['risk']
+            rc, last, _ = self.run_main(root, r, entries)
+            self.assertEqual(rc, 2)
+            self.assertEqual([item['area'] for item in last['new_findings']], ['memory'])
+            self.assertEqual(success.read_bytes(), marker)
+
+    def test_preserved_archive_review_is_bound_to_risky_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshots = make_accepted_archive_reports(root / 'fixture')
+            r = report()
+            r['memory'] = snapshots['risk']
+            entries = [{'identity': item} for item in health.assess(r)['findings']]
+            rc, _, _ = self.run_main(root, r, entries)
+            self.assertEqual(rc, 0)
+            for name in ('changed', 'relocated'):
+                with self.subTest(name=name):
+                    r['memory'] = snapshots[name]
+                    rc, last, _ = self.run_main(root, r, entries)
+                    self.assertEqual(rc, 2)
+                    self.assertEqual([item['area'] for item in last['new_findings']], ['memory'])
 
 
 if __name__ == "__main__":
