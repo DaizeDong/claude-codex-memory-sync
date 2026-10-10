@@ -51,7 +51,7 @@ The profile sync covers:
 
 This is a **same-machine setup**: linked skills and adapted local scripts depend on their original installation. It is not a self-contained copy for a new computer. The tool keeps Codex's existing model, provider, authentication, and permission settings. Claude login/session state is not imported.
 
-Default source is `CLAUDE_CONFIG_DIR`, or the `.claude` directory under the user home; default destination is `CODEX_HOME`, or `~/.codex`. Override paths with `--claude-home`, `--codex-home`, and `--skills-home` when needed. The active `.claude/.claude.json` is preferred over the legacy `~/.claude.json` when both exist. External repository metadata requires an explicit catalog manifest or `CLAUDE_CONFIG_REPO` pointing to the directory containing `external-skill-repos.json`.
+Default source is `CLAUDE_CONFIG_DIR`, or the `.claude` directory under the user home; default destination is `CODEX_HOME`, or `~/.codex`. Override paths with `--claude-home`, `--codex-home`, and `--skills-home` when needed. The active `.claude/.claude.json` is preferred over the legacy `~/.claude.json` when both exist. External repository metadata requires an explicit catalog manifest or `CLAUDE_CONFIG_REPO` pointing to the config repository root, whose `restore/external-skill-repos.json` is read.
 
 ### Memory archive behavior
 

@@ -85,7 +85,7 @@ JSON 的 `inventory` 包含入口路径、归属、来源仓库与版本、依�
 .\sync-all.cmd --apply --repair-links --approved-repo C:\src\skill-pack --json
 ```
 
-多个候选无法区分时保持原样。可以用 `--external-skill-manifest` 指定已有来源仓库清单，或设置 `CLAUDE_CONFIG_REPO`，指向包含 `external-skill-repos.json` 的配置目录；未配置时不会猜测私人仓库位置。原生角色文件和配置入口分别记录受管哈希；审阅角色的只读要求属于行为指令，运行权限仍由 Codex 当前配置决定。
+多个候选无法区分时保持原样。可以用 `--external-skill-manifest` 指定已有来源仓库清单，或设置 `CLAUDE_CONFIG_REPO`，指向配置仓根目录（读取其中的 `restore/external-skill-repos.json`）；未配置时不会猜测私人仓库位置。原生角色文件和配置入口分别记录受管哈希；审阅角色的只读要求属于行为指令，运行权限仍由 Codex 当前配置决定。
 
 链接技能的相对资源须从规范源入口解析，使用 inventory 的 `resource_context.canonical_entrypoint` 和 `resource_context.source_root`。转发包装指向已验证的上游文件，overlay 指向其受管 payload；包装、描述符或入口内容改变时，资源上下文不可用。兄弟目录资源可能需要明确批准的包根。请在已安装 `profile-sync` 的 Python 环境运行：
 
