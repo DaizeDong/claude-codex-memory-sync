@@ -18,9 +18,12 @@ connections, persistent profiles, external configuration files,
 duplicate policy flags, and incomplete source policies are rejected.
 
 Direct launch adoption encloses only `args` in a hashed `playwright-launch`
-ownership block. Session launch adoption owns `command` and `args` together and
-can upgrade an intact older args-only block. Native environment, working directory, enabled state, tool
-allow/deny settings, timeouts, package version, other arguments, other MCP
+ownership block. Session launch adoption owns `command`, `args`, and
+`startup_timeout_sec` together. Its startup budget is at least 120 seconds to
+allow session preparation and MCP initialization; larger existing budgets are
+preserved. It can upgrade intact older args-only or command-and-args blocks.
+Native environment, working directory, enabled state, tool
+allow/deny settings, tool timeout, package version, other arguments, other MCP
 servers, and all unrelated TOML remain intact. Existing `--init-page` arguments
 are passed through to the launcher, which owns runtime hook insertion. Native inline-table layouts that
 cannot be edited safely produce a conflict. A missing args assignment is also

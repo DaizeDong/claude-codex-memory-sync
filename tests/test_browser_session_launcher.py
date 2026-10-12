@@ -22,7 +22,7 @@ def save_source(fixture):
     (fixture["plugin"] / ".mcp.json").write_text(json.dumps({"playwright": fixture["source"]}), encoding="utf-8")
 
 
-def test_session_launcher_adopts_only_command_args_and_preserves_native_init_page(tmp_path):
+def test_session_launcher_adopts_launch_and_timeout_and_preserves_native_init_page(tmp_path):
     fixture = make_browser_session_fixture(tmp_path)
     original = fixture["original"]
     assert plan(fixture, adopt=False)[0] == original
@@ -31,9 +31,10 @@ def test_session_launcher_adopts_only_command_args_and_preserves_native_init_pag
     native = expected["mcp_servers"]["playwright"]
     native["command"] = fixture["source"]["command"]
     native["args"] = [*fixture["source"]["args"][:3], *native["args"], *fixture["source"]["args"][4:]]
+    native["startup_timeout_sec"] = 120
     assert parse(merged) == expected
-    assert original.split(b'enabled = false')[1] in merged
-    assert report["mcp"][0]["ownership"] == "playwright_command_args"
+    assert original.split(b'tool_timeout_sec = 90')[1] in merged
+    assert report["mcp"][0]["ownership"] == "playwright_command_args_startup_timeout"
     assert ownership.verify_members({".codex/config.toml": merged})["status"] == "verified"
     (fixture["codex"] / "config.toml").write_bytes(merged)
     assert plan(fixture, adopt=False)[0] == merged
@@ -42,7 +43,8 @@ def test_session_launcher_adopts_only_command_args_and_preserves_native_init_pag
     assert parse(ordinary)["mcp_servers"]["playwright"] == native
 
 
-def test_legacy_owned_args_upgrade_and_new_command_tampering(tmp_path):
+@pytest.mark.parametrize("tampered_field", ["command", "startup_timeout_sec"])
+def test_legacy_owned_args_upgrade_and_new_owned_field_tampering(tmp_path, tampered_field):
     fixture = make_browser_session_fixture(tmp_path, wrapped=False)
     legacy, _ = plan(fixture)
     (fixture["codex"] / "config.toml").write_bytes(legacy)
@@ -52,15 +54,78 @@ def test_legacy_owned_args_upgrade_and_new_command_tampering(tmp_path):
     save_source(fixture)
     merged, report = plan(fixture, adopt=False)
     assert merged != legacy
-    assert report["mcp"][0]["ownership"] == "playwright_command_args"
+    assert report["mcp"][0]["ownership"] == "playwright_command_args_startup_timeout"
+    assert parse(merged)["mcp_servers"]["playwright"]["startup_timeout_sec"] == 120
+    assert merged.count(b'startup_timeout_sec =') == 1
     config = fixture["codex"] / "config.toml"
     config.write_bytes(merged)
     assert plan(fixture, adopt=False)[0] == merged
-    damaged = merged.replace(b'command = ', b'command = "tampered" # ', 1)
+    damaged = (merged.replace(b'command = ', b'command = "tampered" # ', 1)
+               if tampered_field == "command" else
+               merged.replace(b'startup_timeout_sec = 120', b'startup_timeout_sec = 240', 1))
     config.write_bytes(damaged)
     result, report = plan(fixture)
     assert result == damaged
     assert report["mcp"][0]["status"] == "conflict"
+
+
+@pytest.mark.parametrize("timeout,expected", [
+    (None, 120), (0, 120), (-5, 120), (45, 120), (119.5, 120),
+    (120, 120), (120.0, 120.0), (300, 300), (300.5, 300.5),
+])
+def test_session_startup_timeout_has_a_floor_and_preserves_larger_values(tmp_path, timeout, expected):
+    fixture = make_browser_session_fixture(tmp_path, startup_timeout=timeout)
+    merged, report = plan(fixture)
+    assert report["changed"]
+    assert parse(merged)["mcp_servers"]["playwright"]["startup_timeout_sec"] == expected
+    assert merged.count(b'startup_timeout_sec =') == 1
+    config = fixture["codex"] / "config.toml"
+    config.write_bytes(merged)
+    repeated, report = plan(fixture, adopt=False)
+    assert repeated == merged
+    assert not report["changed"]
+    ordinary, _ = plan_config(fixture["claude"], fixture["codex"], [fixture["plugin"]])
+    assert parse(ordinary)["mcp_servers"]["playwright"] == parse(merged)["mcp_servers"]["playwright"]
+
+
+@pytest.mark.parametrize("timeout", [True, False, "45", float('nan'), float('inf'), float('-inf')])
+def test_invalid_native_startup_timeout_withholds_session_adoption(tmp_path, timeout):
+    fixture = make_browser_session_fixture(tmp_path, startup_timeout=timeout)
+    merged, report = plan(fixture)
+    assert merged == fixture["original"]
+    assert not report["changed"]
+    assert report["mcp"][0]["status"] == "conflict"
+
+
+@pytest.mark.parametrize("timeout,expected", [(None, 120), (45, 120), (300.5, 300.5)])
+def test_old_owned_command_args_upgrade_adds_one_timeout_without_rewriting_other_values(tmp_path, timeout, expected):
+    fixture = make_browser_session_fixture(tmp_path, startup_timeout=timeout, legacy_owned_command_args=True)
+    original = fixture["original"]
+    assert ownership.verify_members({".codex/config.toml": original})["status"] == "verified"
+    expected_document = parse(original)
+    expected_document["mcp_servers"]["playwright"]["startup_timeout_sec"] = expected
+    merged, report = plan(fixture, adopt=False)
+    assert report["changed"]
+    assert parse(merged) == expected_document
+    assert merged.count(b'startup_timeout_sec =') == 1
+    assert ownership.verify_members({".codex/config.toml": merged})["status"] == "verified"
+    (fixture["codex"] / "config.toml").write_bytes(merged)
+    repeated, report = plan(fixture, adopt=False)
+    assert repeated == merged
+    assert not report["changed"]
+
+
+@pytest.mark.parametrize("timeout", [None, 45, 300.5])
+def test_direct_npx_does_not_adopt_or_change_native_startup_timeout(tmp_path, timeout):
+    fixture = make_browser_session_fixture(tmp_path, wrapped=False, startup_timeout=timeout)
+    merged, report = plan(fixture)
+    native = parse(merged)["mcp_servers"]["playwright"]
+    assert native.get("startup_timeout_sec") == timeout
+    assert report["mcp"][0]["ownership"] == "playwright_args_only"
+    if timeout is None:
+        assert "startup_timeout_sec" not in native
+    else:
+        assert b'startup_timeout_sec = ' + json.dumps(timeout).encode() + b'\n' in merged
 
 
 @pytest.mark.parametrize("mutation", ["foreign_wrapper", "missing_wrapper", "missing_hook", "relative_python", "extra_python_arg", "persistent", "duplicate", "remote"])
@@ -110,15 +175,14 @@ def test_scoped_planner_does_not_add_project_fallback_or_other_mcp(tmp_path):
     assert [row["name"] for row in report["mcp"]] == ["playwright"]
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_command_args_layout_preserves_bom_crlf_and_embedded_fake_command(tmp_path, legacy):
-    fixture = make_browser_session_fixture(tmp_path, wrapped=not legacy)
-    original = fixture["original"].replace(b'model = "synthetic-model"',
-        b'model = "synthetic-model"\nnote = """\ncommand = "npx"\nargs = ["fake"]\n"""')
-    original = b'\xef\xbb\xbf' + original.replace(b'\n', b'\r\n')
+@pytest.mark.parametrize("owned_shape", ["native", "args", "command_args"])
+def test_launch_layout_preserves_bom_crlf_quoted_timeout_and_embedded_fake_assignments(tmp_path, owned_shape):
+    fixture = make_browser_session_fixture(tmp_path, wrapped=owned_shape != "args",
+        legacy_owned_command_args=owned_shape == "command_args", complex_toml=True)
+    original = fixture["original"]
     config = fixture["codex"] / "config.toml"
     config.write_bytes(original)
-    if legacy:
+    if owned_shape == "args":
         old, _ = plan(fixture)
         config.write_bytes(old)
         source = fixture["source"]
@@ -128,8 +192,11 @@ def test_command_args_layout_preserves_bom_crlf_and_embedded_fake_command(tmp_pa
     merged, report = plan(fixture)
     assert report["changed"]
     assert parse(merged)["note"] == parse(original)["note"]
+    assert parse(merged)["mcp_servers"]["playwright"]["startup_timeout_sec"] == 120
     assert merged.startswith(b'\xef\xbb\xbf')
     assert b'\n' not in merged.replace(b'\r\n', b'')
+    config.write_bytes(merged)
+    assert plan(fixture, adopt=False)[0] == merged
 
 
 def test_scoped_apply_changes_only_config_and_repeats_without_writes(tmp_path, monkeypatch):
