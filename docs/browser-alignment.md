@@ -14,8 +14,16 @@ and the output directory selected by `PW_MCP_OUTPUT_DIR`. Both settings come fro
 `claude_home/settings.json`'s `env` object and must be nonempty strings that expand to absolute paths;
 the source launch arguments must resolve to those same locations. The shared file
 must already exist. Planning checks its existence without opening it. Remote
-connections, persistent profiles, external configuration files,
+connections, persistent profiles, arbitrary configuration files,
 duplicate policy flags, and incomplete source policies are rejected.
+
+The sole `--config` exception is `claude_home/scripts/captcha-resident/mcp.json`.
+It may contain only `browser.launchOptions.args`, with exactly the two reviewed
+arguments `--remote-debugging-port=0` and `--captcha-resident=mcp`. Both option
+spellings are supported; duplicate options or JSON keys, extra fields and other
+arguments are rejected. The validated file's bytes and resolved path become
+source preconditions for both scoped and ordinary apply. Native config and proxy
+arguments remain intact; source-only config and proxy arguments are not copied.
 
 Direct launch adoption encloses only `args` in a hashed `playwright-launch`
 ownership block. Session launch adoption owns `command`, `args`, and

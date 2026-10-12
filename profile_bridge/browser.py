@@ -55,6 +55,7 @@ def _base_inputs(claude):
     return {
         claude / "settings.json", claude / ".claude.json", claude.parent / ".claude.json",
         claude / "plugins/installed_plugins.json",
+        claude / profile_config._PLAYWRIGHT_CONFIG,
         *(claude / "scripts" / name for name in _HELPERS),
     }
 
@@ -155,6 +156,7 @@ def build_playwright_plan(claude, codex, skills, *, adopt_playwright=False):
             claude, codex, [root for _, root in plugins], adopt_playwright=adopt_playwright)
 
     dependencies = config_report.get("source_dependencies", [])
+    _verify(config_report.get("source_checks", []))
     known = {str(Path(check["path"]).resolve()) for check in source_checks}
     if any(str(Path(raw).resolve()) not in known for raw in dependencies):
         raise ValueError("untracked_browser_source_dependency")

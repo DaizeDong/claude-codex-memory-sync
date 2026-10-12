@@ -851,6 +851,8 @@ def _build_plan(claude: Path, codex: Path, skills: Path, *, repair_links=False,
     plugins, skipped_plugins = enabled_plugins(claude, catalog_snapshot)
     links, files, skill_report = plan_skills(claude, skills, plugins, codex, catalog_snapshot=catalog_snapshot, runtime=runtime)
     config, config_report = plan_config(claude, codex, [root for _, root in plugins], adopt_playwright=adopt_playwright)
+    config_source_checks = config_report.get('source_checks', [])
+    verify_source({'source_checks': config_source_checks})
     config, config_report['skill_routing'] = plan_skill_routing(config, codex, runtime, adopt=route_configured_skills)
     hook_files, hook_report = plan_hooks(claude, codex, plugin_roots=[root for _, root in plugins])
     if hook_report["requires_hooks_feature"]:
@@ -923,6 +925,7 @@ def _build_plan(claude: Path, codex: Path, skills: Path, *, repair_links=False,
     changes = ProfileChanges()
     changes.memory_intent = memory_files.delivery
     changes.memory_conflict = memory_files.recovery_evidence
+    changes.config_source_checks = config_source_checks
     changes.overlay_checks = list({value['artifact_hash']: value for value in runtime.get('source_checks', {}).values()}.values())
     dependencies = []
     for group in runtime.get('replacement_groups', []):
@@ -973,6 +976,10 @@ def _build_plan(claude: Path, codex: Path, skills: Path, *, repair_links=False,
         for row in changes:
             row['legacy_source_checks'] = runtime['legacy_source_checks']
             row['legacy_ownership_before'] = ownership_before
+    verify_source({'source_checks': config_source_checks})
+    if config_source_checks:
+        for row in changes:
+            row['source_checks'] = row.get('source_checks', []) + config_source_checks
     report["changes"] = [{k: v for k, v in row.items() if k not in {"data", "overlay_check", "overlay_dependencies"}} for row in changes]
     report['overlay_preconditions'] = [{k: item.get(k) for k in ('source_id', 'source_hash',
         'source_record_hash', 'transform_version', 'artifact_hash', 'resources')} for item in changes.overlay_checks]
@@ -983,6 +990,7 @@ def _build_plan(claude: Path, codex: Path, skills: Path, *, repair_links=False,
 class ProfileChanges(list):
     memory_intent = None
     memory_conflict = None
+    config_source_checks = ()
     overlay_checks = ()
 
 
@@ -1237,11 +1245,15 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
     conflict = getattr(changes, 'memory_conflict', None)
     if intent and intent.codex != codex:
         raise ValueError('Memory plan destination does not match apply destination')
+    config_preconditions = {'source_checks': list(getattr(changes, 'config_source_checks', ()))}
+    verify_source(config_preconditions)
     if not changes:
         if conflict:
             memory_outbox.preserve_conflict(codex, conflict, skills=skills)
         if intent:
+            verify_source(config_preconditions)
             memory_outbox.prepare(intent, skills=skills)
+            verify_source(config_preconditions)
             report['memory']['delivery'] = memory_outbox.deliver(intent, skills=skills)
             if report['memory']['delivery'].get('unresolved'):
                 report['memory']['status'] = 'partial'
@@ -1292,11 +1304,12 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
             atomic_write(backup / entry["backup_file"], data)
         manifest["changes"].append(entry)
     atomic_write(backup / "manifest.json", json.dumps(manifest, indent=2).encode())
-    if intent:
-        memory_outbox.prepare(intent, skills=skills)
-    elif conflict:
-        memory_outbox.preserve_conflict(codex, conflict, skills=skills)
     try:
+        verify_source(config_preconditions)
+        if intent:
+            memory_outbox.prepare(intent, skills=skills)
+        elif conflict:
+            memory_outbox.preserve_conflict(codex, conflict, skills=skills)
         # Native delivery follows all reversible profile/archive changes.
         replacement_members = {raw for group in dependency_groups.values() for raw in group['members']}
         for row in sorted(changes, key=lambda x: (x["append_only"], x['path'] not in replacement_members)):
@@ -1337,6 +1350,7 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
             if str(path) in dependency_states:
                 dependency_states[str(path)] = row['after']
         if intent:
+            verify_source(config_preconditions)
             report['memory']['delivery'] = memory_outbox.deliver(intent, skills=skills)
             if report['memory']['delivery'].get('unresolved'):
                 report['memory']['status'] = 'partial'
