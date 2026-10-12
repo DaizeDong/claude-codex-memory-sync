@@ -1122,6 +1122,23 @@ def _rollback_locked(backup: Path, codex: Path, skills: Path) -> dict:
 
 
 def verify_source(row: dict):
+    selection = row.get('browser_selection_check')
+    if selection is not None:
+        from profile_bridge.browser import verify_selection
+        verify_selection(selection)
+    checks = row.get('source_checks', [])
+    if not isinstance(checks, list):
+        raise ValueError('Invalid source preconditions')
+    for check in checks:
+        if (not isinstance(check, dict) or set(check) != {'path', 'resolved', 'before'} or
+                not isinstance(check['path'], str) or not isinstance(check['resolved'], str) or
+                not isinstance(check['before'], dict) or
+                check['before'].get('kind') not in {'file', 'missing'}):
+            raise ValueError('Invalid source preconditions')
+        path = Path(check['path'])
+        if (not path.is_absolute() or str(path.resolve()) != check['resolved'] or
+                snapshot(path.resolve()) != check['before']):
+            raise ValueError('Source changed during planning; rerun sync')
     for check in row.get('legacy_source_checks', []):
         verify_source({'source_check': check})
     overlay = row.get('overlay_check')

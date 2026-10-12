@@ -6,6 +6,51 @@ import profile_memory as memory
 from profile_bridge import memory_outbox as outbox
 
 
+def make_browser_session_fixture(root, *, wrapped=True, declared_agent=False):
+    """Generate a native browser launch and its synthetic reviewed source policy."""
+    import json
+    import sys
+
+    home = Path(root) / "synthetic browser home"
+    claude, codex, skills = home / ".claude", home / ".codex", home / ".agents/skills"
+    plugin = claude / "plugins/cache/example/playwright/synthetic-version"
+    auth, output = home / "private-browser", home / "browser-output"
+    wrapper = claude / "scripts/pw-mcp-session.py"
+
+    def put(path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+
+    put(claude / "settings.json", {"enabledPlugins": {"playwright@example": True}, "env": {
+        "PW_AUTH_CONFIG": str(auth), "PW_MCP_OUTPUT_DIR": str(output)}})
+    put(claude / "plugins/installed_plugins.json", {"version": 2, "plugins": {
+        "playwright@example": [{"scope": "user", "installPath": str(plugin)}]}})
+    put(wrapper, b"# Synthetic launcher fixture; no browser is started.\n")
+    for name in ("pw-mcp-session.cjs", "pw-auth.py", "pw_storage_paths.py"):
+        put(wrapper.with_name(name), b"/* Synthetic dependency fixture. */\n" if name.endswith(".cjs")
+            else b"# Synthetic dependency fixture.\n")
+    # Deliberately not valid JSON: planning must never parse browser credentials.
+    put(auth / "shared.json", b"synthetic opaque browser state\n")
+    source = {"command": "npx", "args": ["@playwright/mcp@latest", "--isolated", "--storage-state",
+        str(auth / "shared.json"), "--output-dir", str(output)]}
+    if wrapped:
+        source = {"command": sys.executable, "args": [str(wrapper), "--", source["command"], *source["args"]]}
+    put(plugin / ".mcp.json", {"playwright": source})
+    if declared_agent:
+        put(plugin / ".claude-plugin/plugin.json", {"name": "playwright", "agents": ["./agents/example.md"]})
+        put(plugin / "agents/example.md", b"---\nname: example\ndescription: Synthetic example agent.\n---\nSynthetic instructions.\n")
+    original = (b'# native formatting must survive\nmodel = "synthetic-model"\n'
+                b'[mcp_servers.playwright]\ncommand = "npx"\n'
+                b'args = ["-y", "@playwright/mcp@1.2.3", "--init-page", "synthetic-init.js", "--browser", "chromium"]\n'
+                b'enabled = false\nstartup_timeout_sec = 45\ntool_timeout_sec = 90\n'
+                b'enabled_tools = ["browser_snapshot"]\n'
+                b'[mcp_servers.playwright.env]\nSYNTHETIC = "preserve"\n'
+                b'[mcp_servers.other]\ncommand = "preserve-other"\n')
+    put(codex / "config.toml", original)
+    return {"home": home, "claude": claude, "codex": codex, "skills": skills, "plugin": plugin,
+            "wrapper": wrapper, "auth": auth, "source": source, "original": original}
+
+
 def make_profile_rollback_fixture(backup, codex_home, skills_home):
     """Generate one flat rollback copy containing only fixed synthetic content."""
     import hashlib
