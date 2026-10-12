@@ -4,17 +4,25 @@
 adopt_playwright=True)` explicitly adopts the native `playwright` server's launch
 policy. The default remains conservative for all native server collisions.
 
-Adoption accepts a direct `npx @playwright/mcp` invocation. It requires the
-source to use `--isolated`, the complete `claude_home.parent/.pw-auth/shared.json`
-seed, and `claude_home.parent/.playwright-mcp-output`. The shared file must
-already exist. Planning checks its existence without opening it. Wrappers,
-remote connections, persistent profiles, external configuration files,
+Adoption accepts a direct `npx @playwright/mcp` invocation or the canonical
+`claude_home/scripts/pw-mcp-session.py` session launcher. The latter must use an
+existing absolute Python interpreter, its companion CJS hook, `pw-auth.py` and
+`pw_storage_paths.py`, and arguments of the form
+`[launcher, "--", npx, "@playwright/mcp", ...]`. Other wrappers are rejected.
+Both forms require the source to use `--isolated`, the complete `shared.json` under `PW_AUTH_CONFIG`,
+and the output directory selected by `PW_MCP_OUTPUT_DIR`. Both settings come from
+`claude_home/settings.json`'s `env` object and must be nonempty strings that expand to absolute paths;
+the source launch arguments must resolve to those same locations. The shared file
+must already exist. Planning checks its existence without opening it. Remote
+connections, persistent profiles, external configuration files,
 duplicate policy flags, and incomplete source policies are rejected.
 
-Only the native `args` assignment is enclosed in a hashed `playwright-launch`
-ownership block. Native environment, working directory, enabled state, tool
+Direct launch adoption encloses only `args` in a hashed `playwright-launch`
+ownership block. Session launch adoption owns `command` and `args` together and
+can upgrade an intact older args-only block. Native environment, working directory, enabled state, tool
 allow/deny settings, timeouts, package version, other arguments, other MCP
-servers, and all unrelated TOML remain intact. Native inline-table layouts that
+servers, and all unrelated TOML remain intact. Existing `--init-page` arguments
+are passed through to the launcher, which owns runtime hook insertion. Native inline-table layouts that
 cannot be edited safely produce a conflict. A missing args assignment is also
 reported rather than guessed.
 
@@ -24,7 +32,34 @@ The planner does not write config or browser state. The ordinary sync path
 recognizes the ownership block thereafter, without needing another opt-in.
 Changes to owned bytes cause a conflict; changes to unrelated native settings
 are preserved. Missing, disabled, or degraded source definitions preserve the
-adopted native server and report the condition instead of deleting it.
+adopted native server and report the condition instead of deleting it. A source
+change from the session launcher back to direct `npx` is reported as a conflict;
+ordinary regeneration cannot silently remove the session lifecycle integration.
+
+## Playwright-only plan and apply
+
+`plan_playwright_config(...)` exposes the same launch transformer without
+planning project-document fallbacks, other MCP servers, hooks, skills or memory.
+`profile_bridge.browser.build_playwright_plan(...)` adds destination and source
+snapshots and returns an ordinary one-file plan for `profile_sync.apply_plan`.
+The source snapshot includes launch helpers and source-selection inputs, so
+intervening source edits or newly appearing configuration files require a fresh plan.
+
+Run the CLI from the authoritative bridge checkout with a Python environment
+that has its declared dependencies installed:
+
+```text
+python -m profile_bridge.browser --adopt-playwright
+python -m profile_bridge.browser --adopt-playwright --apply
+```
+
+The first command is a zero-write preview. The second uses the existing apply
+lock, destination hash checks, rollback copy and cleanup. It does not invoke
+full profile sync, health checks or memory import. `--adopt-playwright` explicitly
+allows taking ownership of a native launch; subsequent runs can omit it.
+Existing MCP processes require a reconnect before the changed launch takes effect.
+An installed wheel must be updated through its normal release process to acquire
+this planner; changing the checkout does not replace installed package files.
 
 ## Source helpers
 
