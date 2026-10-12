@@ -30,6 +30,8 @@ _SOURCE_PREFIX = "# claude-profile-source: "
 _PLAYWRIGHT_BLOCK = "playwright-launch"
 _PLAYWRIGHT_SESSION_FILES = ("pw-mcp-session.py", "pw-mcp-session.cjs", "pw-auth.py", "pw_storage_paths.py")
 _PLAYWRIGHT_STARTUP_TIMEOUT = 120
+_PLAYWRIGHT_CONFIG = "scripts/captcha-resident/mcp.json"
+_PLAYWRIGHT_CONFIG_ARGS = {"--remote-debugging-port=0", "--captcha-resident=mcp"}
 _BROWSER_FLAGS = ("--isolated", "--storage-state", "--output-dir")
 _INCOMPATIBLE_BROWSER_FLAGS = {"--user-data-dir", "--cdp-endpoint", "--extension", "--config", "--shared-browser-context"}
 
@@ -414,7 +416,63 @@ def _remove_mcp(text: str, key: str, name: str, members=None) -> str | None:
     return candidate if parsed == expected else None
 
 
-def _playwright_argv(spec: dict) -> list[str]:
+def _playwright_config(args, claude_home, source_checks):
+    """Validate the one reviewed config and bind its exact bytes to the plan."""
+    options = [index for index, arg in enumerate(args) if arg.split("=", 1)[0] == "--config"]
+    if not options:
+        return
+    if len(options) != 1 or claude_home is None:
+        raise ValueError("playwright_config_option_not_reviewed")
+    index = options[0]
+    _, equal, value = args[index].partition("=")
+    if not equal:
+        value = args[index + 1] if index + 1 < len(args) else ""
+    canonical = (Path(claude_home) / _PLAYWRIGHT_CONFIG).absolute()
+    path = Path(value)
+    if (not value or not path.is_absolute() or path != canonical or
+            not canonical.resolve().is_relative_to(Path(claude_home).resolve())):
+        raise ValueError("playwright_config_path_not_reviewed")
+    resolved = canonical.resolve()
+    try:
+        data = canonical.read_bytes()
+    except FileNotFoundError:
+        check = {"path": str(canonical), "resolved": str(resolved), "before": {"kind": "missing"}}
+        if source_checks is not None and check not in source_checks:
+            source_checks.append(check)
+        raise ValueError("playwright_config_missing") from None
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("playwright_config_duplicate_key")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique_object)
+    except (UnicodeError, ValueError):
+        raise ValueError("playwright_config_content_not_reviewed") from None
+    if (not isinstance(document, dict) or set(document) != {"browser"} or
+            not isinstance(document["browser"], dict) or set(document["browser"]) != {"launchOptions"}):
+        raise ValueError("playwright_config_content_not_reviewed")
+    launch = document["browser"]["launchOptions"]
+    if (not isinstance(launch, dict) or set(launch) != {"args"} or
+            not isinstance(launch["args"], list) or len(launch["args"]) != len(_PLAYWRIGHT_CONFIG_ARGS) or
+            any(not isinstance(arg, str) for arg in launch["args"]) or set(launch["args"]) != _PLAYWRIGHT_CONFIG_ARGS):
+        raise ValueError("playwright_config_content_not_reviewed")
+    if canonical.resolve() != resolved or canonical.read_bytes() != data:
+        raise ValueError("playwright_config_changed_during_planning")
+    check = {"path": str(canonical), "resolved": str(resolved),
+             "before": {"kind": "file", "sha256": hashlib.sha256(data).hexdigest()}}
+    if source_checks is not None:
+        if any(old["path"] == check["path"] and old != check for old in source_checks):
+            raise ValueError("playwright_config_changed_during_planning")
+        if check not in source_checks:
+            source_checks.append(check)
+
+
+def _playwright_argv(spec: dict, claude_home=None, source_checks=None) -> list[str]:
     """Accept only the reviewed direct npx Playwright transport, never a wrapper."""
     command = re.split(r"[/\\]", spec.get("command", ""))[-1].lower()
     args = spec.get("args")
@@ -424,12 +482,13 @@ def _playwright_argv(spec: dict) -> list[str]:
     packages = [i for i, arg in enumerate(args) if re.fullmatch(r"@playwright/mcp(?:@[^\s]+)?", arg)]
     if len(packages) != 1 or any(arg not in {"-y", "--yes"} for arg in args[:packages[0]]):
         raise ValueError("playwright_alignment_requires_direct_npx")
-    if any(arg.split("=", 1)[0] in _INCOMPATIBLE_BROWSER_FLAGS for arg in args):
+    if any(arg.split("=", 1)[0] in _INCOMPATIBLE_BROWSER_FLAGS - {"--config"} for arg in args):
         raise ValueError("playwright_incompatible_launch_option")
+    _playwright_config(args, claude_home, source_checks)
     return args
 
 
-def _playwright_transport(spec: dict, claude_home: Path) -> tuple[dict, bool]:
+def _playwright_transport(spec: dict, claude_home: Path, source_checks=None) -> tuple[dict, bool]:
     """Unwrap only the canonical session launcher; arbitrary wrappers stay native."""
     args = spec.get("args")
     wrapper = claude_home / "scripts/pw-mcp-session.py"
@@ -444,9 +503,9 @@ def _playwright_transport(spec: dict, claude_home: Path) -> tuple[dict, bool]:
                 not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)?)?(?:\.exe)?", interpreter.name, re.I)):
             raise ValueError("playwright_session_launcher_unavailable")
         inner = {"command": args[2], "args": args[3:]}
-        _playwright_argv(inner)
+        _playwright_argv(inner, claude_home, source_checks)
         return inner, True
-    _playwright_argv(spec)
+    _playwright_argv(spec, claude_home, source_checks)
     return spec, False
 
 
@@ -503,13 +562,13 @@ def _replace_playwright_assignment(text, key, replacement, expected):
     return None
 
 
-def _align_playwright(text, spec, claude_home, identity, newline, members, adopt):
+def _align_playwright(text, spec, claude_home, identity, newline, members, adopt, source_checks=None):
     """Own the reviewed launch and its startup budget, preserving other settings."""
     block = _blocks(text, members).get(_PLAYWRIGHT_BLOCK)
     if block is None and not adopt:
         return None, "native_codex_server_preserved"
     try:
-        source, session_launcher = _playwright_transport(spec, claude_home)
+        source, session_launcher = _playwright_transport(spec, claude_home, source_checks)
         _, policy = _browser_options(source["args"])
         if set(policy) != set(_BROWSER_FLAGS):
             raise ValueError("playwright_source_policy_incomplete")
@@ -533,7 +592,7 @@ def _align_playwright(text, spec, claude_home, identity, newline, members, adopt
             raise ValueError("playwright_source_output_directory_not_reviewed")
         expected = _parse(text)
         native = expected["mcp_servers"]["playwright"]
-        native_transport, native_launcher = _playwright_transport(native, claude_home)
+        native_transport, native_launcher = _playwright_transport(native, claude_home, source_checks)
         if native_launcher and not session_launcher:
             raise ValueError("playwright_session_launcher_downgrade_refused")
         rest, _ = _browser_options(native_transport["args"])
@@ -604,7 +663,7 @@ def plan_playwright_config(claude_home: Path, codex_home: Path, plugin_roots: li
     claude_home, codex_home = Path(claude_home), Path(codex_home)
     original = (codex_home / "config.toml").read_bytes()
     report = {"changed": False, "sources": [], "settings": [], "warnings": [], "mcp": [],
-              "source_dependencies": [str(claude_home / "settings.json")]}
+              "source_dependencies": [str(claude_home / "settings.json")], "source_checks": []}
     entries = [entry for entry in _collect(claude_home, plugin_roots, report) if entry[0] == "playwright"]
     item = {"name": "playwright"}
     report["mcp"].append(item)
@@ -631,7 +690,7 @@ def plan_playwright_config(claude_home: Path, codex_home: Path, plugin_roots: li
             raise ValueError("playwright_native_server_missing")
         members = _agent_members(codex_home, original)
         _blocks(text, members)
-        _, wrapped = _playwright_transport(spec, claude_home)
+        _, wrapped = _playwright_transport(spec, claude_home, report["source_checks"])
     except (OSError, UnicodeError, ValueError, TypeError):
         item.update(status="conflict", reason="playwright_transport_or_ownership_invalid")
         return original, report
@@ -639,7 +698,9 @@ def plan_playwright_config(claude_home: Path, codex_home: Path, plugin_roots: li
         report["source_dependencies"].extend(str(claude_home / "scripts" / name) for name in _PLAYWRIGHT_SESSION_FILES)
     identity = {"owner": OWNER, **source_identity(source, claude_home, plugin_catalog(claude_home), root=plugin_root)}
     newline = "\r\n" if "\r\n" in text else "\n"
-    candidate, reason = _align_playwright(text, spec, claude_home, identity, newline, members, adopt_playwright)
+    candidate, reason = _align_playwright(text, spec, claude_home, identity, newline, members, adopt_playwright,
+                                        report["source_checks"])
+    report["source_dependencies"].extend(check["path"] for check in report["source_checks"])
     if candidate is None:
         item.update(status="conflict", reason=reason)
         return original, report
@@ -730,7 +791,7 @@ def plan_config(claude_home: Path, codex_home: Path, plugin_roots: list[Path], *
     # unreadable existing configuration as an empty writable configuration.
     report: dict[str, Any] = {
         "changed": False, "sources": [], "mcp": [], "project_docs": {},
-        "settings": [], "warnings": [],
+        "settings": [], "warnings": [], "source_checks": [],
     }
     entries = _collect(claude_home, plugin_roots, report)
     if type(adopt_playwright) is not bool:
@@ -803,12 +864,13 @@ def plan_config(claude_home: Path, codex_home: Path, plugin_roots: list[Path], *
                     item.update(status="unavailable", reason=reason)
                     continue
                 identity = {"owner": OWNER, **source_identity(source, claude_home, catalog, root=plugin_root)}
-                candidate, reason = _align_playwright(text, spec, claude_home, identity, newline, members, adopt_playwright)
+                candidate, reason = _align_playwright(text, spec, claude_home, identity, newline, members, adopt_playwright,
+                                                    report["source_checks"])
                 if candidate is None:
                     item.update(status="conflict", reason=reason)
                 else:
                     item.update(status="unchanged" if candidate == text else "updated", reason=reason,
-                                ownership=("playwright_command_args_startup_timeout" if _playwright_transport(spec, claude_home)[1]
+                                ownership=("playwright_command_args_startup_timeout" if _playwright_transport(spec, claude_home, report["source_checks"])[1]
                                            else "playwright_args_only"), backup="existing_config_plan_apply",
                                 before_sha256=hashlib.sha256(original).hexdigest())
                     text = candidate

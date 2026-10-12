@@ -6,7 +6,8 @@ import pytest
 
 from profile_bridge import ownership
 from profile_config import plan_config, plan_playwright_config
-from tools.make_fixtures import make_browser_session_fixture
+from tools.make_fixtures import (make_browser_config_fixture, make_browser_followup_fixture,
+                                 make_browser_session_fixture)
 
 
 def parse(data):
@@ -281,3 +282,225 @@ def test_scoped_cli_returns_nonzero_when_apply_leaves_a_rollback_copy(tmp_path, 
     assert code != 0
     assert result["status"] == "applied"
     assert result["cleanup_pending"]
+
+
+@pytest.mark.parametrize("spelling", ["separate", "equals"])
+@pytest.mark.parametrize("config_case", ["valid", "reversed"])
+def test_source_canonical_config_is_validated_without_importing_source_only_options(tmp_path, spelling, config_case):
+    fixture = make_browser_session_fixture(tmp_path, source_config=spelling,
+        config_case=config_case, source_proxy=True)
+    expected_args = parse(fixture["original"])["mcp_servers"]["playwright"]["args"]
+    for planner in (plan_playwright_config, plan_config):
+        merged, report = planner(fixture["claude"], fixture["codex"], [fixture["plugin"]], adopt_playwright=True)
+        native = parse(merged)["mcp_servers"]["playwright"]
+        assert report["mcp"][0]["status"] == "updated"
+        assert native["args"] == [*fixture["source"]["args"][:3], *expected_args,
+                                  *fixture["source"]["args"][4:9]]
+        assert native["startup_timeout_sec"] == 120
+        checks = report["source_checks"]
+        assert any(check["path"] == str(fixture["resident_config"])
+                   and check["resolved"] == str(fixture["resident_config"].resolve())
+                   and check["before"]["kind"] == "file" for check in checks)
+
+
+@pytest.mark.parametrize("source_spelling", [None, "separate", "equals"])
+@pytest.mark.parametrize("native_spelling", ["separate", "equals"])
+def test_native_canonical_config_and_proxy_options_are_preserved_exactly(tmp_path, source_spelling, native_spelling):
+    fixture = make_browser_session_fixture(tmp_path, source_config=source_spelling,
+        native_config=native_spelling, source_proxy=True, native_proxy=True)
+    original = parse(fixture["original"])["mcp_servers"]["playwright"]
+    merged, report = plan(fixture)
+    native = parse(merged)["mcp_servers"]["playwright"]
+    assert report["mcp"][0]["status"] == "updated"
+    assert native["args"] == [*fixture["source"]["args"][:3], *original["args"],
+                              *fixture["source"]["args"][4:9]]
+    assert native["args"].count("--proxy-server") == 1
+    assert native["enabled"] == original["enabled"]
+    assert native["env"] == original["env"]
+    (fixture["codex"] / "config.toml").write_bytes(merged)
+    assert plan(fixture, adopt=False)[0] == merged
+
+
+@pytest.mark.parametrize("location", ["source", "native"])
+@pytest.mark.parametrize("case", [
+    "missing", "root_extra", "browser_extra", "launch_extra", "unsafe_argument",
+    "nonzero_debug_port", "missing_argument", "duplicate_argument", "invalid_args_type",
+    "duplicate_root_key", "duplicate_browser_key", "duplicate_launch_key", "null", "malformed",
+])
+def test_noncanonical_config_content_withholds_adoption(tmp_path, location, case):
+    fixture = make_browser_session_fixture(tmp_path, **{location + "_config": "separate"}, config_case=case)
+    for planner in (plan_playwright_config, plan_config):
+        merged, report = planner(fixture["claude"], fixture["codex"], [fixture["plugin"]], adopt_playwright=True)
+        assert parse(merged)["mcp_servers"]["playwright"] == parse(fixture["original"])["mcp_servers"]["playwright"]
+        assert report["mcp"][0]["status"] == "conflict"
+
+
+@pytest.mark.parametrize("location", ["source", "native"])
+@pytest.mark.parametrize("mutation", ["arbitrary", "alias", "missing_value", "empty_equals", "value_is_flag", "duplicate", "duplicate_mixed"])
+def test_unreviewed_or_malformed_config_options_withhold_adoption(tmp_path, location, mutation):
+    fixture = make_browser_session_fixture(tmp_path, **{location + "_config": "separate"})
+    if location == "source":
+        args = fixture["source"]["args"]
+    else:
+        args = parse(fixture["original"])["mcp_servers"]["playwright"]["args"]
+    index = args.index("--config")
+    if mutation == "arbitrary":
+        arbitrary = make_browser_config_fixture(fixture["claude"] / "scripts/synthetic-other-config.json")
+        args[index + 1] = str(arbitrary)
+    elif mutation == "alias":
+        canonical = fixture["resident_config"]
+        args[index + 1] = str(canonical.parent / ".." / canonical.parent.name / canonical.name)
+    elif mutation == "missing_value":
+        del args[index + 1]
+    elif mutation == "empty_equals":
+        args[index:index + 2] = ["--config="]
+    elif mutation == "value_is_flag":
+        args[index + 1] = "--headless"
+    elif mutation == "duplicate":
+        args.extend(args[index:index + 2])
+    else:
+        args.append("--config=" + str(fixture["resident_config"]))
+    if location == "source":
+        save_source(fixture)
+        before = fixture["original"]
+    else:
+        native_args = json.dumps(parse(fixture["original"])["mcp_servers"]["playwright"]["args"]).encode()
+        before = fixture["original"].replace(native_args, json.dumps(args).encode(), 1)
+        (fixture["codex"] / "config.toml").write_bytes(before)
+    merged, report = plan(fixture)
+    assert merged == before
+    assert report["mcp"][0]["status"] == "conflict"
+
+
+def build_browser_fixture_plan(fixture, scope):
+    from profile_bridge.browser import build_playwright_plan
+    import profile_sync as sync
+
+    planner = build_playwright_plan if scope == "scoped" else sync.build_plan
+    return planner(*(fixture[key] for key in ("claude", "codex", "skills")), adopt_playwright=True)
+
+
+@pytest.mark.parametrize("location", ["source", "native"])
+def test_canonical_config_must_resolve_inside_the_claude_home(tmp_path, location):
+    import os
+    import profile_sync as sync
+
+    fixture = make_browser_session_fixture(tmp_path, **{location + "_config": "separate"})
+    canonical = fixture["resident_config"]
+    outside = make_browser_config_fixture(fixture["home"] / "synthetic-outside/mcp.json")
+    canonical.unlink()
+    canonical.parent.rmdir()
+    sync.make_link(canonical.parent, outside.parent)
+    try:
+        merged, report = plan(fixture)
+        assert merged == fixture["original"]
+        assert report["mcp"][0]["status"] == "conflict"
+    finally:
+        if os.name == "nt" and not canonical.parent.is_symlink():
+            canonical.parent.rmdir()
+        else:
+            canonical.parent.unlink()
+
+
+@pytest.mark.parametrize("scope", ["scoped", "full"])
+def test_canonical_config_dependency_survives_real_plan_and_apply(tmp_path, scope):
+    import profile_sync as sync
+
+    fixture = make_browser_session_fixture(tmp_path, source_config="equals", source_proxy=True)
+    changes, report = build_browser_fixture_plan(fixture, scope)
+    config = fixture["codex"] / "config.toml"
+    config_change = next(row for row in changes if row["path"] == str(config))
+    checks = (config_change["source_checks"] if scope == "scoped" else changes.config_source_checks)
+    assert any(check["path"] == str(fixture["resident_config"])
+               and check["before"] == sync.snapshot(fixture["resident_config"]) for check in checks)
+    result = sync.apply_plan(changes, report, fixture["codex"], fixture["skills"])
+    assert result["status"] == "applied"
+    assert config.read_bytes() == config_change["data"]
+    native = parse(config.read_bytes())["mcp_servers"]["playwright"]
+    assert native["startup_timeout_sec"] == 120
+    assert not any(arg.startswith(("--config", "--proxy-")) for arg in native["args"])
+
+
+@pytest.mark.parametrize("scope", ["scoped", "full"])
+@pytest.mark.parametrize("mutation", ["changed", "deleted", "retargeted"])
+def test_apply_rejects_changed_deleted_or_retargeted_canonical_config(tmp_path, scope, mutation):
+    import os
+    import profile_sync as sync
+
+    fixture = make_browser_session_fixture(tmp_path, source_config="separate")
+    changes, report = build_browser_fixture_plan(fixture, scope)
+    canonical = fixture["resident_config"]
+    original = canonical.read_bytes()
+    linked_parent = None
+    if mutation == "changed":
+        make_browser_config_fixture(canonical, "reversed")
+    elif mutation == "deleted":
+        canonical.unlink()
+    else:
+        alternate = make_browser_config_fixture(fixture["claude"] / "scripts/synthetic-retarget/mcp.json")
+        assert alternate.read_bytes() == original
+        canonical.unlink()
+        canonical.parent.rmdir()
+        sync.make_link(canonical.parent, alternate.parent)
+        linked_parent = canonical.parent
+    try:
+        with pytest.raises(ValueError, match="[Ss]ource.*[Cc]hanged"):
+            sync.apply_plan(changes, report, fixture["codex"], fixture["skills"])
+        assert (fixture["codex"] / "config.toml").read_bytes() == fixture["original"]
+        assert not (fixture["codex"] / "claude-sync/backups").exists()
+    finally:
+        if linked_parent is not None:
+            # Remove only the synthetic link; leave its target to pytest cleanup.
+            if os.name == "nt" and not linked_parent.is_symlink():
+                linked_parent.rmdir()
+            else:
+                linked_parent.unlink()
+
+
+def test_scoped_planner_rejects_initially_missing_config_created_during_planning(tmp_path, monkeypatch):
+    from profile_bridge import browser
+
+    fixture = make_browser_session_fixture(tmp_path, source_config="separate", config_case="missing")
+    original_planner = browser.profile_config.plan_playwright_config
+
+    def create_config_then_plan(*args, **kwargs):
+        make_browser_config_fixture(fixture["resident_config"])
+        return original_planner(*args, **kwargs)
+
+    monkeypatch.setattr(browser.profile_config, "plan_playwright_config", create_config_then_plan)
+    with pytest.raises(ValueError, match="[Ss]ource.*[Cc]hanged"):
+        build_browser_fixture_plan(fixture, "scoped")
+    assert (fixture["codex"] / "config.toml").read_bytes() == fixture["original"]
+
+
+@pytest.mark.parametrize("pending_work", ["none", "instructions", "memory"])
+def test_full_plan_with_unchanged_config_retains_dependency_before_other_work(tmp_path, monkeypatch, pending_work):
+    from pathlib import Path
+    import profile_sync as sync
+
+    fixture = make_browser_session_fixture(tmp_path, source_config="separate")
+    if pending_work == "memory":
+        make_browser_followup_fixture(fixture, "memory")
+    changes, report = build_browser_fixture_plan(fixture, "full")
+    sync.apply_plan(changes, report, fixture["codex"], fixture["skills"])
+    if pending_work == "instructions":
+        make_browser_followup_fixture(fixture, "instructions")
+    options = {"request_id": "synthetic-browser-check", "scope": ["synthetic-project"]} if pending_work == "memory" else {}
+    planned, report = sync.build_plan(fixture["claude"], fixture["codex"], fixture["skills"], **options)
+    config = fixture["codex"] / "config.toml"
+    assert not any(row["path"] == str(config) for row in planned)
+    if pending_work == "instructions":
+        assert planned
+    else:
+        assert planned == []
+    if pending_work == "memory":
+        assert planned.memory_intent and planned.memory_intent.new_grant
+        assert planned.memory_intent.record["delivery_state"] == "prepared"
+    assert any(check["path"] == str(fixture["resident_config"]) for check in planned.config_source_checks)
+    before = {path: sync.snapshot(path) for path in [config, *(Path(row["path"]) for row in planned)]}
+    monkeypatch.setattr(sync.memory_outbox, "prepare", lambda *args, **kwargs: pytest.fail("stale source must block preparation"))
+    monkeypatch.setattr(sync.memory_outbox, "deliver", lambda *args, **kwargs: pytest.fail("stale source must block delivery"))
+    make_browser_config_fixture(fixture["resident_config"], "reversed")
+    with pytest.raises(ValueError, match="[Ss]ource.*[Cc]hanged"):
+        sync.apply_plan(planned, report, fixture["codex"], fixture["skills"])
+    assert {path: sync.snapshot(path) for path in before} == before
