@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,7 @@ _FALLBACK_KEY = "project_doc_fallback_filenames"
 _SOURCE_PREFIX = "# claude-profile-source: "
 _PLAYWRIGHT_BLOCK = "playwright-launch"
 _PLAYWRIGHT_SESSION_FILES = ("pw-mcp-session.py", "pw-mcp-session.cjs", "pw-auth.py", "pw_storage_paths.py")
+_PLAYWRIGHT_STARTUP_TIMEOUT = 120
 _BROWSER_FLAGS = ("--isolated", "--storage-state", "--output-dir")
 _INCOMPATIBLE_BROWSER_FLAGS = {"--user-data-dir", "--cdp-endpoint", "--extension", "--config", "--shared-browser-context"}
 
@@ -502,7 +504,7 @@ def _replace_playwright_assignment(text, key, replacement, expected):
 
 
 def _align_playwright(text, spec, claude_home, identity, newline, members, adopt):
-    """Own args, plus command for the reviewed session launcher, preserving all else."""
+    """Own the reviewed launch and its startup budget, preserving other settings."""
     block = _blocks(text, members).get(_PLAYWRIGHT_BLOCK)
     if block is None and not adopt:
         return None, "native_codex_server_preserved"
@@ -535,6 +537,12 @@ def _align_playwright(text, spec, claude_home, identity, newline, members, adopt
         if native_launcher and not session_launcher:
             raise ValueError("playwright_session_launcher_downgrade_refused")
         rest, _ = _browser_options(native_transport["args"])
+        if session_launcher:
+            startup_timeout = native.get("startup_timeout_sec", _PLAYWRIGHT_STARTUP_TIMEOUT)
+            if (type(startup_timeout) not in (int, float) or
+                    isinstance(startup_timeout, float) and not math.isfinite(startup_timeout)):
+                raise ValueError("playwright_native_startup_timeout_invalid")
+            startup_timeout = max(_PLAYWRIGHT_STARTUP_TIMEOUT, startup_timeout)
     except (ValueError, OSError, TypeError, KeyError) as exc:
         return None, str(exc) if isinstance(exc, ValueError) else "playwright_policy_unreadable"
     args = [*rest, "--isolated", "--storage-state", policy["--storage-state"], "--output-dir", policy["--output-dir"]]
@@ -542,10 +550,12 @@ def _align_playwright(text, spec, claude_home, identity, newline, members, adopt
     if session_launcher:
         args = [spec["args"][0], "--", native_transport["command"], *args]
         expected["mcp_servers"]["playwright"]["command"] = spec["command"]
+        expected["mcp_servers"]["playwright"]["startup_timeout_sec"] = startup_timeout
     expected["mcp_servers"]["playwright"]["args"] = args
     body = (_SOURCE_PREFIX + json.dumps(identity, sort_keys=True) + newline +
             ("command = " + _quote(spec["command"]) + newline if session_launcher else "") +
-            "args = [" + ", ".join(_quote(arg) for arg in args) + "]" + newline)
+            "args = [" + ", ".join(_quote(arg) for arg in args) + "]" + newline +
+            ("startup_timeout_sec = " + repr(startup_timeout) + newline if session_launcher else ""))
     rendered = _managed(_PLAYWRIGHT_BLOCK, body, newline)
 
     def valid(candidate):
@@ -554,9 +564,9 @@ def _align_playwright(text, spec, claude_home, identity, newline, members, adopt
         except tomllib.TOMLDecodeError:
             return False
 
+    owned = _parse(block.body) if block is not None else {}
     if block is not None:
-        owned = _parse(block.body)
-        if set(owned) not in ({"args"}, {"command", "args"}):
+        if set(owned) not in ({"args"}, {"command", "args"}, {"command", "args", "startup_timeout_sec"}):
             return None, "playwright_owned_args_layout_changed"
         without_owned = copy.deepcopy(_parse(text))
         for key in owned:
@@ -566,21 +576,20 @@ def _align_playwright(text, spec, claude_home, identity, newline, members, adopt
                 return None, "playwright_owned_args_layout_changed"
         except tomllib.TOMLDecodeError:
             return None, "playwright_owned_args_layout_changed"
-        if session_launcher and "command" not in owned:
-            without_command = copy.deepcopy(_parse(text))
-            without_command["mcp_servers"]["playwright"].pop("command")
-            text = _replace_playwright_assignment(text, "command", "", without_command)
+    if session_launcher:
+        for key in ("command", "startup_timeout_sec"):
+            if key in owned or key not in native:
+                continue
+            without_key = copy.deepcopy(_parse(text))
+            without_key["mcp_servers"]["playwright"].pop(key)
+            text = _replace_playwright_assignment(text, key, "", without_key)
             if text is None:
-                return None, "playwright_native_command_layout_not_supported"
+                return None, f"playwright_native_{key}_layout_not_supported"
+        if block is not None:
             block = _blocks(text, members)[_PLAYWRIGHT_BLOCK]
+    if block is not None:
         candidate = text[:block.start] + rendered + text[block.end:]
         return (candidate, "playwright_launch_policy_updated") if valid(candidate) else (None, "playwright_owned_args_layout_changed")
-    if session_launcher:
-        without_command = copy.deepcopy(_parse(text))
-        without_command["mcp_servers"]["playwright"].pop("command")
-        text = _replace_playwright_assignment(text, "command", "", without_command)
-        if text is None:
-            return None, "playwright_native_command_layout_not_supported"
     candidate = _replace_playwright_assignment(text, "args", rendered, expected)
     if candidate is not None:
         return candidate, "playwright_native_launch_adopted" if session_launcher else "playwright_native_args_adopted"
@@ -636,7 +645,7 @@ def plan_playwright_config(claude_home: Path, codex_home: Path, plugin_roots: li
         return original, report
     merged = candidate.encode("utf-8")
     item.update(status="unchanged" if merged == original else "updated", reason=reason,
-                ownership="playwright_command_args" if wrapped else "playwright_args_only",
+                ownership="playwright_command_args_startup_timeout" if wrapped else "playwright_args_only",
                 backup="existing_config_plan_apply", before_sha256=hashlib.sha256(original).hexdigest())
     report["changed"] = merged != original
     return merged, report
@@ -799,7 +808,7 @@ def plan_config(claude_home: Path, codex_home: Path, plugin_roots: list[Path], *
                     item.update(status="conflict", reason=reason)
                 else:
                     item.update(status="unchanged" if candidate == text else "updated", reason=reason,
-                                ownership=("playwright_command_args" if _playwright_transport(spec, claude_home)[1]
+                                ownership=("playwright_command_args_startup_timeout" if _playwright_transport(spec, claude_home)[1]
                                            else "playwright_args_only"), backup="existing_config_plan_apply",
                                 before_sha256=hashlib.sha256(original).hexdigest())
                     text = candidate
