@@ -6,6 +6,165 @@ import profile_memory as memory
 from profile_bridge import memory_outbox as outbox
 
 
+def make_browser_session_fixture(root, *, wrapped=True, declared_agent=False,
+                                 startup_timeout=45, legacy_owned_command_args=False,
+                                 complex_toml=False, source_config=None, native_config=None,
+                                 config_case="valid", source_proxy=False, native_proxy=False):
+    """Generate a native browser launch and its synthetic reviewed source policy."""
+    import hashlib
+    import json
+    import math
+    import sys
+
+    if legacy_owned_command_args and not wrapped:
+        raise ValueError("Legacy command ownership requires the session launcher")
+    home = Path(root) / "synthetic browser home"
+    claude, codex, skills = home / ".claude", home / ".codex", home / ".agents/skills"
+    plugin = claude / "plugins/cache/example/playwright/synthetic-version"
+    auth, output = home / "private-browser", home / "browser-output"
+    wrapper = claude / "scripts/pw-mcp-session.py"
+    resident_config = claude / "scripts/captcha-resident/mcp.json"
+
+    def config_args(spelling):
+        if spelling is None:
+            return []
+        if spelling == "separate":
+            return ["--config", str(resident_config)]
+        if spelling == "equals":
+            return ["--config=" + str(resident_config)]
+        raise ValueError("Unknown synthetic config option spelling")
+
+    proxy_args = ["--proxy-server", "http://127.0.0.1:8888", "--proxy-bypass", "localhost,127.0.0.1"]
+
+    def put(path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+
+    put(claude / "settings.json", {"enabledPlugins": {"playwright@example": True}, "env": {
+        "PW_AUTH_CONFIG": str(auth), "PW_MCP_OUTPUT_DIR": str(output)}})
+    put(claude / "plugins/installed_plugins.json", {"version": 2, "plugins": {
+        "playwright@example": [{"scope": "user", "installPath": str(plugin)}]}})
+    put(wrapper, b"# Synthetic launcher fixture; no browser is started.\n")
+    for name in ("pw-mcp-session.cjs", "pw-auth.py", "pw_storage_paths.py"):
+        put(wrapper.with_name(name), b"/* Synthetic dependency fixture. */\n" if name.endswith(".cjs")
+            else b"# Synthetic dependency fixture.\n")
+    # Deliberately not valid JSON: planning must never parse browser credentials.
+    put(auth / "shared.json", b"synthetic opaque browser state\n")
+    source = {"command": "npx", "args": ["@playwright/mcp@latest", "--isolated", "--storage-state",
+        str(auth / "shared.json"), "--output-dir", str(output)]}
+    if source_config is not None or native_config is not None:
+        make_browser_config_fixture(resident_config, config_case)
+    source["args"] += config_args(source_config) + (proxy_args if source_proxy else [])
+    if wrapped:
+        source = {"command": sys.executable, "args": [str(wrapper), "--", source["command"], *source["args"]]}
+    put(plugin / ".mcp.json", {"playwright": source})
+    if declared_agent:
+        put(plugin / ".claude-plugin/plugin.json", {"name": "playwright", "agents": ["./agents/example.md"]})
+        put(plugin / "agents/example.md", b"---\nname: example\ndescription: Synthetic example agent.\n---\nSynthetic instructions.\n")
+    newline = "\r\n" if complex_toml else "\n"
+    native_args = ["-y", "@playwright/mcp@1.2.3", "--init-page", "synthetic-init.js", "--browser", "chromium"]
+    native_args += config_args(native_config) + (proxy_args if native_proxy else [])
+    header = '# native formatting must survive\nmodel = "synthetic-model"\n'
+    if complex_toml:
+        header += 'note = """\ncommand = "npx"\nargs = ["fake"]\nstartup_timeout_sec = 5\n"""\n'
+    header += '[mcp_servers.playwright]\n'
+    launch = 'command = "npx"' + newline + 'args = ' + json.dumps(native_args) + newline
+    if legacy_owned_command_args:
+        # Reproduce the prior two-field format directly, independently of the
+        # current planner, so future migrations still exercise a real old shape.
+        identity = {"owner": "claude-codex-profile-sync", "provider": "plugin",
+                    "plugin": "playwright@example", "provider_root": str(plugin),
+                    "source": str(plugin / ".mcp.json")}
+        legacy_args = [str(wrapper), "--", "npx", *native_args, *source["args"][4:]]
+        body = ('# claude-profile-source: ' + json.dumps(identity, sort_keys=True) + newline +
+                'command = ' + json.dumps(source["command"]) + newline +
+                'args = ' + json.dumps(legacy_args) + newline)
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        launch = (f'# BEGIN claude-codex-profile-sync playwright-launch sha256={digest}{newline}' +
+                  body + f'# END claude-codex-profile-sync playwright-launch{newline}')
+    timeout_line = ''
+    if startup_timeout is not None:
+        if isinstance(startup_timeout, float) and not math.isfinite(startup_timeout):
+            value = 'nan' if math.isnan(startup_timeout) else 'inf' if startup_timeout > 0 else '-inf'
+        else:
+            value = json.dumps(startup_timeout)
+        key = '"startup_timeout_sec"' if complex_toml else 'startup_timeout_sec'
+        timeout_line = f'{key} = {value}\n'
+    suffix = ('enabled = false\n' + timeout_line + 'tool_timeout_sec = 90\n'
+              'enabled_tools = ["browser_snapshot"]\n'
+              '[mcp_servers.playwright.env]\nSYNTHETIC = "preserve"\n'
+              '[mcp_servers.other]\ncommand = "preserve-other"\n')
+    original = (('\ufeff' if complex_toml else '') + header.replace('\n', newline) +
+                launch + suffix.replace('\n', newline)).encode('utf-8')
+    put(codex / "config.toml", original)
+    return {"home": home, "claude": claude, "codex": codex, "skills": skills, "plugin": plugin,
+            "wrapper": wrapper, "auth": auth, "source": source, "original": original,
+            "resident_config": resident_config, "proxy_args": proxy_args}
+
+
+def make_browser_config_fixture(path, case="valid"):
+    """Generate reviewed browser config shapes and explicit synthetic invalid cases."""
+    import json
+
+    path = Path(path)
+    if case == "missing":
+        return path
+    args = ["--remote-debugging-port=0", "--captcha-resident=mcp"]
+    launch = {"args": args}
+    browser = {"launchOptions": launch}
+    document = {"browser": browser}
+    if case == "reversed":
+        args.reverse()
+    elif case == "root_extra":
+        document["port"] = 1234
+    elif case == "browser_extra":
+        browser["userDataDir"] = "synthetic-profile"
+    elif case == "launch_extra":
+        launch["headless"] = True
+    elif case == "unsafe_argument":
+        args.append("--remote-debugging-address=0.0.0.0")
+    elif case == "nonzero_debug_port":
+        args[0] = "--remote-debugging-port=9222"
+    elif case == "missing_argument":
+        args.pop()
+    elif case == "duplicate_argument":
+        args.append(args[0])
+    elif case == "invalid_args_type":
+        launch["args"] = args[0]
+    elif case == "null":
+        document = None
+    elif case not in {"valid", "duplicate_root_key", "duplicate_browser_key", "duplicate_launch_key", "malformed"}:
+        raise ValueError("Unknown synthetic browser config case")
+    payload = json.dumps(document)
+    if case == "duplicate_root_key":
+        payload = '{"browser":' + json.dumps(browser) + ',"browser":' + json.dumps(browser) + '}'
+    elif case == "duplicate_browser_key":
+        payload = '{"browser":{"launchOptions":' + json.dumps(launch) + ',"launchOptions":' + json.dumps(launch) + '}}'
+    elif case == "duplicate_launch_key":
+        payload = '{"browser":{"launchOptions":{"args":' + json.dumps(args) + ',"args":' + json.dumps(args) + '}}}'
+    elif case == "malformed":
+        payload = '{"browser":'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return path
+
+
+def make_browser_followup_fixture(fixture, kind):
+    """Generate unrelated instructions or memory for browser dependency tests."""
+    if kind == "instructions":
+        files = {fixture["claude"] / "CLAUDE.md": "Use concise synthetic replies.\n"}
+    elif kind == "memory":
+        files = {
+            fixture["claude"] / "projects/synthetic-project/memory/MEMORY.md": "# Synthetic browser follow-up\n",
+            fixture["codex"] / "memories/extensions/ad_hoc/instructions.md": "# Synthetic append contract\n",
+        }
+    else:
+        raise ValueError("Unknown synthetic browser follow-up")
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
 def make_profile_rollback_fixture(backup, codex_home, skills_home):
     """Generate one flat rollback copy containing only fixed synthetic content."""
     import hashlib
