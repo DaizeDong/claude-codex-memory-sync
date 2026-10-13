@@ -206,15 +206,6 @@ def test_guard_uses_every_shard_and_absorbs_full_context_without_pruning(tmp_pat
     put_json(authdir / "store/beta.json", state("beta.example.com"))
     put_json(authdir / "shared.json", state("old.example.com"))
     put_json(authdir / "incoming/context.json", state("new.example.com"))
-    # Runtime writes carry no PRIVATE visibility proof. A helper copy that still
-    # has one must not reach out to a remote from this synthetic home, so the
-    # hook is neutralised when present and is a no-op when it is gone.
-    import pw_storage_paths
-    class SyntheticBoundary:
-        @staticmethod
-        def prove_private_companion(root):
-            return None
-    monkeypatch.setattr(pw_storage_paths, "_boundary", lambda home: SyntheticBoundary, raising=False)
     monkeypatch.setattr(guard, "prune_stale", lambda *a: pytest.fail("must not prune"))
     monkeypatch.setattr(guard, "patch_isolation", lambda *a: pytest.fail("must not patch plugins"))
     monkeypatch.setattr(sys, "argv", ["guard", "--prepare-shared-state"])

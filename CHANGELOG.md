@@ -7,8 +7,8 @@ All notable changes to this project are documented here (Keep a Changelog style)
 ### Removed
 
 - The browser alignment test no longer depends on the Playwright storage helper
-  proving its companion PRIVATE at runtime. The fleet dropped that runtime proof;
-  the test now neutralises the hook only when an older helper still defines it.
+  proving its companion PRIVATE at runtime. The helper no longer has that proof,
+  so the test carries no stub for it.
 
 ### Added
 
