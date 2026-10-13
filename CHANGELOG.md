@@ -4,6 +4,12 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+### Removed
+
+- The browser alignment test no longer depends on the Playwright storage helper
+  proving its companion PRIVATE at runtime. The fleet dropped that runtime proof;
+  the test now neutralises the hook only when an older helper still defines it.
+
 ### Added
 
 - Full profile sync through `sync-all.cmd`, `run_profile_sync.py` and `profile_*`:
