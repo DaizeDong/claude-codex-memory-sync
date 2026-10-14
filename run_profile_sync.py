@@ -54,6 +54,10 @@ def run(claude, codex, skills, *, apply=False, write_status=False, probe=False,
                 if apply:
                     applied = apply_plan(changes, plan, codex, skills)
                     result['cleanup_pending'] = applied.get('cleanup_pending')
+                    # The verification preview no longer sees tables this apply moved out of a
+                    # managed block, so the apply plan's record is kept in the run result.
+                    if plan.get('config', {}).get('foreign_tables'):
+                        result['foreign_tables_relocated'] = plan['config']['foreign_tables']
                     # Exact-byte archive reviews authorize this transaction only.
                     # Successful retirement consumes the reviewed destination;
                     # verify the resulting owned state without replaying it.

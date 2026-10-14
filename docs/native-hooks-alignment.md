@@ -13,6 +13,17 @@ each owned event handler and the bridge, and requires its manifest checksum.
 Restore and redaction validate the original dependency group before rehashing.
 Windows encoded launch commands are relocated along with their plain paths.
 
+The launcher names the base interpreter of the environment running the sync
+(`sys._base_executable`), not the virtual environment's own `python.exe`: a runtime
+installer replaces that environment several times a day, and the bridge needs only
+the standard library. Paths under the user home are written as
+`($env:USERPROFILE + '\relative\path')` in the encoded PowerShell command and as
+`"$HOME"/relative/path` in `command`, so the definition names no user directory and
+needs no rewrite on another machine. Concatenation is used instead of `Join-Path`
+because loading a cmdlet module writes a progress record to stderr as CLIXML. A
+missing interpreter fails the hook with a PowerShell error; nothing substitutes
+another interpreter. A changed handler command changes its native trust hash.
+
 ## Source entrypoints
 
 SessionStart runs the declared source `pw_isolation_guard.py` only with

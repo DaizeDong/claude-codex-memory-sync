@@ -109,6 +109,68 @@ def _markers(data):
     return sorted(matches, key=lambda m: m.start())
 
 
+_TABLE_HEADER = re.compile(rb"\[\[?[^\[\]\r\n]+\]\]?[ \t]*(?:#[^\r\n]*)?")
+_MARKER_TEXT = re.compile(rb"(?:<!-- claude-profile-sync:|# (?:BEGIN|END|Managed by) claude[-a-z:]+|# instructions_sha256=)")
+
+
+def _tables(tail):
+    """Header names of a tail that starts (after blank and comment lines) with a table header."""
+    headers = []
+    for line in tail.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(b"#"):
+            continue
+        if _TABLE_HEADER.fullmatch(stripped):
+            headers.append(stripped.split(b"]")[0].lstrip(b"[").strip().decode("utf-8"))
+        elif not headers:
+            return None
+    return headers or None
+
+
+def relocate_foreign_tables(data):
+    """Move whole TOML tables that another writer put inside an owned config block to just after it.
+
+    Codex's own TOML editor inserts a new top-level table after the last table it knows about, which
+    can be the table of a managed block, so the new table lands between that block's body and its END
+    comment. The block's digest then no longer matches and every later verification treats the whole
+    configuration as user-modified. A block is repaired only when a strict line-aligned prefix of its
+    body still hashes to the recorded digest, the rest starts with a table header and carries no
+    ownership markers, and moving the rest after the END line leaves the parsed document unchanged.
+    Any other mismatch stays an ownership conflict. Returns the new bytes and one record per block
+    (owner, name, table headers moved); values are never reported.
+    """
+    try:
+        before = tomllib.loads(data.decode("utf-8-sig"))
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        return data, []
+    result, moved = data, []
+    for match in reversed(list(BLOCK.finditer(data))):
+        body = match["body"]
+        if digest(body).encode() == match["hash"] or match["hash"] == ZERO.encode():
+            continue
+        starts = [m.end() for m in re.finditer(rb"\n", body)][:-1]
+        cut = next((i for i in starts if digest(body[:i]).encode() == match["hash"]), None)
+        if cut is None:
+            continue
+        tail = body[cut:]
+        headers = _tables(tail)
+        if headers is None or _MARKER_TEXT.search(tail):
+            continue
+        end_line = data[match.end("body"):match.end()]
+        if not end_line.endswith(b"\n"):
+            end_line += b"\r\n" if b"\r\n" in data else b"\n"
+        candidate = result[:match.start("body")] + body[:cut] + end_line + tail + result[match.end():]
+        try:
+            if tomllib.loads(candidate.decode("utf-8-sig")) != before:
+                continue
+        except (UnicodeError, tomllib.TOMLDecodeError):
+            continue
+        result = candidate
+        moved.append({"owner": match["owner"].decode(), "block": match["name"].decode(), "tables": headers})
+    moved.reverse()
+    return result, moved
+
+
 def _carries_markers(data):
     """True when the original bytes hold at least one well-formed, intact ownership marker.
 

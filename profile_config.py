@@ -804,8 +804,15 @@ def plan_config(claude_home: Path, codex_home: Path, plugin_roots: list[Path], *
         report["warnings"].append({"source": str(config_path), "reason": "existing_codex_config_invalid; all_config_changes_withheld"})
         report["project_docs"] = {"status": "conflict", "reason": "existing_codex_config_invalid"}
         return original, report
+    # Whole tables another writer (the Codex desktop app) placed inside an owned block move out of it
+    # first; otherwise one foreign table turns every managed block into a conflict.
+    relocated, foreign = ownership.relocate_foreign_tables(original)
+    if foreign:
+        text = relocated.decode("utf-8")
+        report["foreign_tables"] = [{**row, "status": "relocated", "reason": "foreign_table_inside_managed_block"}
+                                    for row in foreign]
     try:
-        members = _agent_members(codex_home, original)
+        members = _agent_members(codex_home, text.encode("utf-8"))
         _blocks(text, members)
     except (OSError, ValueError, UnicodeError):
         reason = "managed_block_modified_by_user"

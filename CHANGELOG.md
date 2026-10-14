@@ -4,6 +4,23 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+### Fixed
+
+- A table that another writer put inside a managed `config.toml` block no longer
+  turns the whole configuration into a conflict. The Codex desktop app appends new
+  tables after the last table it knows, which can land between a managed block's body
+  and its END comment; the block's digest stopped matching, every managed MCP, agent,
+  routing and project-document entry was reported as a conflict and every run exited
+  `2`. The planner now moves such whole tables to just after the block when a
+  line-aligned prefix of the body still matches the recorded digest, the remainder
+  starts with a table header and carries no ownership markers, and the parsed
+  configuration is unchanged. The move is reported under `config.foreign_tables` and
+  in the run result as `foreign_tables_relocated`; any other edit stays a conflict.
+- Native hook launchers no longer pin the interpreter of the runtime generation that
+  ran the sync, which the installer replaces several times a day. They name the base
+  interpreter and write paths under the user home through `$env:USERPROFILE` (`$HOME`
+  in `command`).
+
 ### Removed
 
 - The test suite, its fixture generator and the CI test workflow, per the rule that a

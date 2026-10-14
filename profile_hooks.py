@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shlex
 import shutil
@@ -260,17 +260,52 @@ def _render_bridge(jobs: list[dict]) -> bytes:
             "\nif __name__ == '__main__':\n    raise SystemExit(main(JOBS))\n").encode("utf-8")
 
 
+def _interpreter() -> Path:
+    """The interpreter the bridge runs on: the base Python under the running environment.
+
+    A virtual environment's own python.exe belongs to one installed runtime generation, which an
+    installer replaces several times a day, so pinning it breaks every hook at the next install. The
+    bridge is standard-library only, and the base interpreter that every such environment runs on
+    keeps its path across generations.
+    """
+    return Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()
+
+
+def _home_relative(path: Path) -> PurePosixPath | None:
+    try:
+        return PurePosixPath(path.resolve().relative_to(Path.home().resolve()).as_posix())
+    except ValueError:
+        return None
+
+
+def _powershell_path(path: Path) -> str:
+    # Paths under the user's home are written against $env:USERPROFILE, which every hook process
+    # inherits, so the hook definition names no user directory and survives a different home.
+    relative = _home_relative(path)
+    if relative is None:
+        return "'" + str(path).replace("'", "''") + "'"
+    # Plain concatenation, not Join-Path: a cmdlet makes PowerShell load its module, and the
+    # module-preparation progress record would reach the hook's stderr as CLIXML.
+    return "($env:USERPROFILE + '\\" + str(PureWindowsPath(relative)).replace("'", "''") + "')"
+
+
+def _posix_path(path: Path) -> str:
+    relative = _home_relative(path)
+    return shlex.quote(str(path)) if relative is None else '"$HOME"/' + shlex.quote(str(relative))
+
+
 def _handler(bridge: Path, jobs: list[dict], event="Stop") -> dict:
-    argv = [str(Path(sys.executable).resolve()), str(bridge.resolve()), event]
+    interpreter = _interpreter()
     # This launcher works whether the enclosing Windows hook shell is cmd or
     # PowerShell. Neither shell receives the original Claude command string.
-    powershell = "& " + " ".join("'" + value.replace("'", "''") + "'" for value in argv)
+    powershell = ("& " + _powershell_path(interpreter) + " " + _powershell_path(bridge) + " '"
+                  + event.replace("'", "''") + "'")
     encoded = base64.b64encode(powershell.encode("utf-16-le")).decode("ascii")
     # Pin the native Windows shell too, independent of a later session's PATH.
     launcher = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe") if os.name == "nt" else "powershell.exe"
     return {"hooks": [{
         "type": "command",
-        "command": shlex.join(argv),
+        "command": " ".join((_posix_path(interpreter), _posix_path(bridge), shlex.quote(event))),
         "commandWindows": subprocess.list2cmdline([launcher, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]),
         # hooks.json uses `timeout`; app-server DTOs report it as timeoutSec.
         # Exact 0.154.0 hooks/list ignores timeoutSec in the input file.
