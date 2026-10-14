@@ -27,8 +27,6 @@ is in [CHANGELOG.md](CHANGELOG.md).
   sensitive-filename and hard-credential checks that block the whole batch, bounded
   inputs, incremental deduplication against existing notes, and atomic note publication
   under a destination-derived mutex.
-- Black-box tests for both entry points, all of them building their trees from synthetic
-  data in temporary directories.
 - Native Windows 8.3 aliases for hook and custom plugin paths, with idempotent
   planning and unchanged plugin-local and destination-link protections.
 

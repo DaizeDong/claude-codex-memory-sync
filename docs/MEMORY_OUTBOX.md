@@ -248,22 +248,3 @@ and freshness, preserve newer revocations, and block cross-home restore pending
 T08/T09 aliases. Validation is not permission to overwrite, reactivate grants,
 reinterpret `delivery_unknown`, or claim current ownership of a native file.
 
-For controller integration tests, `tools.make_fixtures.make_t03_history(home)`
-generates a fresh synthetic home with `.claude`, `.codex`, and `.agents/skills`
-using real T03 prepare/publish/recover/revoke APIs. It produces prepared, published,
-unknown and cancelled records, revoked authorization, and `history_initialized`.
-`t03_state_bytes(codex_home)` returns its complete byte mapping. The SYNC test
-`tests/test_memory_restore_state.py` checks completeness, damaged/missing members,
-pure validation, byte capture/restore at the same home, and restart in a fresh
-Python process. CONFIG's actual capture/restore end-to-end wiring remains the
-controller's integration test; this helper does not implement CONFIG or aliases.
-
-## Validation
-
-`python -m pytest tests/test_memory_delivery.py tests/test_memory_restore_state.py tests/test_profile_memory.py
- tests/test_profile_sync.py -q` exercises synthetic temporary homes. The delivery
-suite uses real child-process `os._exit` at persistence/publication boundaries,
-native consumption, replay, scoped changes, repeated ABA, identity/content
-conflicts, cancellation, missing contracts, legacy/corrupt history, rollback, and
-protected native-byte equality. JSON output contains identifiers, hashes, paths,
-states and counts, never source bodies or prepared note content.

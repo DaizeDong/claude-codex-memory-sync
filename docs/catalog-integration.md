@@ -58,14 +58,5 @@ one and all existing status dimensions. The proposal and before hashes are kept
 in the ignored T07 producer candidate directory for the producer owner to review.
 SYNC does not load that directory in production and contains no fallback parser.
 
-After verifying the installed producer provides the pinned interface, run:
-
-```powershell
-..\.venv\Scripts\python.exe -m pytest tests/test_profile_catalog.py tests/test_profile_inventory.py tests/test_profile_agents.py tests/test_profile_sync.py -q -p no:cacheprovider
-..\.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
-```
-
-The implementation report distinguishes worker scratch validation against the
-staged producer candidate from normal tests against the installed producer.
 Live inventory comparison is a separate read-only acceptance step. T08 snapshot
 extraction, T09 memory migration and T10 role/overlay replacement remain separate.

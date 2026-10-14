@@ -25,12 +25,5 @@
     "test-results/"
   ],
   "fixture": [],
-  "_fixture_note": [
-    "Empty by construction, not by omission. tests/run-tests.ps1 builds every memory tree it needs",
-    "at runtime, under a fresh GUID directory in the system temp dir, and deletes it afterwards. No",
-    "sample memory file is committed, so there is no golden that a real MEMORY.md could be pasted",
-    "into. That is the same guarantee tools/make_fixtures.py provides elsewhere in the fleet, reached",
-    "by having no on-disk fixtures at all."
-  ],
   "_data_home": "The operator's real memory lives in the Claude projects memory dir and is written to the Codex memories dir. Both are resolved at runtime and neither is ever inside this repo."
 }

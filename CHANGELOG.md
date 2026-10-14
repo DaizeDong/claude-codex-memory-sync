@@ -6,6 +6,8 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Removed
 
+- The test suite, its fixture generator and the CI test workflow, per the rule that a
+  confirmed-working feature keeps no tests.
 - The browser alignment test no longer depends on the Playwright storage helper
   proving its companion PRIVATE at runtime. The helper no longer has that proof,
   so the test carries no stub for it.

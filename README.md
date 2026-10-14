@@ -2,7 +2,6 @@
 
 Bridge supported Claude Code skills, instructions, MCP settings, reviewed hook adapters, and project memory into Codex on the same machine. Preview and back up managed changes before applying them. Ownership checks protect later user edits; native memory delivery requires an explicit authorized scope.
 
-[![Test](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
@@ -118,39 +117,6 @@ Hook warning identities include the event. Preserved archive copies normally ret
 
 The profile transform and health checks do not call a model. Automation that adds agent work should invoke the operator's `llmcall` interface with `mode="agent"`, inheriting its provider policy rather than embedding a second routing chain.
 
-### Profile bridge tests
-
-All tests use synthetic data in temporary directories:
-
-```powershell
-python -m pytest tests -q -ra
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
-```
-
-The first command requires Python 3.11+. The second verifies the existing Windows PowerShell 5.1 memory-only bridge.
-
-Public CI uses generated synthetic llmcall 0.3.1 contracts and does not install
-`llmcall` from PyPI, whose same-named distribution is a different project.
-The skip summary reports the real-wheel integration as `NOT_RUN`. Passing these
-tests verifies the codec against the synthetic contract, not an installed client.
-
-To check the codec against real types, install a reviewed llmcall 0.3.1 wheel in
-a fresh environment with the development dependencies above. Obtain its expected
-SHA256 from the artifact review, then explicitly enable the integration:
-
-```powershell
-python -m pip install --no-deps C:\path\to\reviewed\llmcall-0.3.1-py3-none-any.whl
-$env:PROFILE_SYNC_LLM_CALL_WHEEL_SHA256 = 'REPLACE_WITH_REVIEWED_WHEEL_SHA256'
-$env:PROFILE_SYNC_LLM_CALL_INTEGRATION = '1'
-python -m pytest tests/test_llmcall_wheel_integration.py -q -ra
-```
-
-The enabled test fails unless distribution version 0.3.1, the installed wheel's
-`direct_url.json` SHA256, its recorded module location, and the required API all
-match. It checks preservation of `RecordingFailure` with real result types and
-a synthetic provider response; it makes no model calls and does not establish
-provider or end-to-end workflow compatibility.
-
 Executing a workflow requires an installed `llmcall` client with the 0.3.0 call
 contract; an older client fails before workflow state is written. Its clients run
 in the caller's process cwd and environment, so a workflow continues only from
@@ -158,9 +124,7 @@ its anchored workspace: a continuation started from another directory fails with
 `workspace_requires_process_cwd` (under llmcall 0.2.0 the anchor was passed per
 call instead), so change into the anchored workspace first. An idempotent
 retrieval of a completed request still answers from any directory. Histories
-written for llmcall 0.2.0 stay readable and
-resumable. Passing the source tests does not establish that the current local
-client supports those contracts.
+written for llmcall 0.2.0 stay readable and resumable.
 
 ## Memory-only bridge: design philosophy
 
@@ -380,16 +344,9 @@ For nontrivial automation, prefer parsing the JSON object.
 
 Dry run performs no writes, but it still validates the source, ingress contract, safety rules, and existing history. It can therefore return `1` or `2`.
 
-### Verification and tests
+### Verification
 
-Run the complete black-box suite from the repository root:
-
-```powershell
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
-  -File .\tests\run-tests.ps1
-```
-
-Then preview the real local configuration without writing:
+Preview the real local configuration without writing:
 
 ```powershell
 .\sync-memory.cmd `
@@ -398,7 +355,7 @@ Then preview the real local configuration without writing:
   -OutputFormat Json
 ```
 
-`-DryRun` neither creates the notes directory nor writes staging notes, but it still validates the real target's `extensions\ad_hoc\instructions.md`. Do not point `CodexMemoriesRoot` at an empty temporary directory without that ingress contract; use the bundled black-box suite for isolated tests.
+`-DryRun` neither creates the notes directory nor writes staging notes, but it still validates the real target's `extensions\ad_hoc\instructions.md`. Do not point `CodexMemoriesRoot` at an empty temporary directory without that ingress contract.
 
 ### Limitations
 

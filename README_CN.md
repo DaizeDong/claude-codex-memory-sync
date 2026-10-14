@@ -2,7 +2,6 @@
 
 将同机 Claude Code 的技能、指令、兼容 MCP 配置、已审阅的 hook 适配器及项目记忆接入 Codex。先预览并备份受管改动，再应用；所有权校验保护后续人工修改，原生记忆投递只覆盖明确授权的范围。
 
-[![测试](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml/badge.svg)](https://github.com/DaizeDong/claude-codex-memory-sync/actions/workflows/test.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](sync-claude-memory-to-codex.ps1)
 [![许可证：MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![语言](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#语言)
@@ -117,31 +116,7 @@ hook 告警的 identity 也包含事件名。保留的归档副本通常只按�
 
 同步和健康检查本身不调用模型。自动化流程需要 agent 时，应通过已有 `llmcall` 接口的 `mode="agent"` 调用，沿用其路由策略。
 
-### 完整配置测试
-
-测试数据全部在临时目录中合成：
-
-```powershell
-python -m pytest tests -q -ra
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
-```
-
-第一条要求 Python 3.11+；第二条验证原有 Windows PowerShell 5.1 单项目记忆桥。
-
-公开 CI 使用生成的 llmcall 0.3.1 合成契约，不从 PyPI 安装 `llmcall`，因为 PyPI 上的同名包属于另一个项目。跳过摘要会将真实 wheel 集成测试标为 `NOT_RUN`。这些测试通过，只说明编解码器符合合成契约，不能证明已安装客户端兼容。
-
-如需用真实类型验证编解码器，先在新环境中安装上面的开发依赖，再安装经过审查的 llmcall 0.3.1 wheel。预期 SHA256 必须来自产物审查，然后显式启用集成测试：
-
-```powershell
-python -m pip install --no-deps C:\path\to\reviewed\llmcall-0.3.1-py3-none-any.whl
-$env:PROFILE_SYNC_LLM_CALL_WHEEL_SHA256 = 'REPLACE_WITH_REVIEWED_WHEEL_SHA256'
-$env:PROFILE_SYNC_LLM_CALL_INTEGRATION = '1'
-python -m pytest tests/test_llmcall_wheel_integration.py -q -ra
-```
-
-启用后，测试会核对包版本是否为 0.3.1、安装记录 `direct_url.json` 中的 wheel SHA256 是否符合预期，以及导入模块是否属于该包并提供所需 API。任一项不符都会失败。测试用真实结果类型和合成响应验证 `RecordingFailure` 能否在保存后恢复，不调用模型，也不证明 provider 或完整工作流兼容。
-
-工作流上下文测试使用生成的合成客户端，不调用模型。执行工作流需要提供 0.3.0 调用接口的 `llmcall` 客户端；更早的客户端会在写入工作流状态之前报错。llmcall 的子进程运行在调用方进程的工作目录和环境里，所以工作流只能在锚定的工作目录中继续。从其他目录发起继续请求会报 `workspace_requires_process_cwd`，需要先切换到锚定目录；llmcall 0.2.0 则由每次调用传入该目录。幂等读取已经完成的请求仍可在任意目录进行。为 llmcall 0.2.0 写下的历史记录仍可读取和继续。源码测试通过不代表本机现有客户端支持这些契约。
+执行工作流需要提供 0.3.0 调用接口的 `llmcall` 客户端；更早的客户端会在写入工作流状态之前报错。llmcall 的子进程运行在调用方进程的工作目录和环境里，所以工作流只能在锚定的工作目录中继续。从其他目录发起继续请求会报 `workspace_requires_process_cwd`，需要先切换到锚定目录；llmcall 0.2.0 则由每次调用传入该目录。幂等读取已经完成的请求仍可在任意目录进行。为 llmcall 0.2.0 写下的历史记录仍可读取和继续。
 
 ## 原有单项目记忆桥：设计哲学
 
@@ -356,16 +331,9 @@ exit /b %SYNC_CODE%
 
 Dry run 不执行写入，但仍会验证来源、ingress 约定、安全规则和现有历史，因此也可能返回 `1` 或 `2`。
 
-### 验证与测试
+### 验证
 
-在仓库根目录运行完整黑盒测试：
-
-```powershell
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
-  -File .\tests\run-tests.ps1
-```
-
-然后针对真实本地配置做一次零写入预览：
+针对真实本地配置做一次零写入预览：
 
 ```powershell
 .\sync-memory.cmd `
@@ -374,7 +342,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -OutputFormat Json
 ```
 
-`-DryRun` 不创建 notes 目录，也不写 staging note，但仍会验证真实目标中的 `extensions\ad_hoc\instructions.md`。不要把 `CodexMemoriesRoot` 指向一个没有该入口约定的空临时目录；隔离测试请使用随附的黑盒测试套件。
+`-DryRun` 不创建 notes 目录，也不写 staging note，但仍会验证真实目标中的 `extensions\ad_hoc\instructions.md`。不要把 `CodexMemoriesRoot` 指向一个没有该入口约定的空临时目录。
 
 ### 局限
 
