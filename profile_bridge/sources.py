@@ -14,10 +14,25 @@ import time
 import uuid
 from contextvars import ContextVar
 
-from .filesystem import atomic_replace, read_bounded, validate_path, UnsafePathError, link_state
+from fleet_guards.filesystem import atomic_replace, read_bounded, validate_path, UnsafePathError
 
 _DEADLINE = ContextVar("profile_source_deadline", default=None)
 MAX_SOURCE_SECONDS = 300
+
+
+def link_state(path):
+    """Immediate link facts without traversing the target."""
+    path = Path(path)
+    validate_path(path.parent)
+    info = path.lstat()
+    symlink = stat.S_ISLNK(info.st_mode)
+    if not symlink and not getattr(info, "st_file_attributes", 0) & 0x400:
+        raise UnsafePathError("not_a_link")
+    result = {"kind": "link", "target": os.readlink(path),
+              "link_type": "symlink" if symlink else "junction"}
+    if os.name == "nt" and symlink:
+        result["directory"] = bool(info.st_file_attributes & 0x10)
+    return result
 
 
 def remaining_seconds(maximum):
