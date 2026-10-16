@@ -1289,21 +1289,26 @@ def _apply_plan_locked(changes: list, report: dict, codex: Path, skills: Path):
     if intent:
         manifest['memory_notes'] = [str(codex / 'memories/extensions/ad_hoc/notes' / f"claude-memory-{intent.record['increment_id']}.md")]
 
-    # Back up and verify every destination before changing any destination.
-    for i, row in enumerate(changes):
-        path = Path(row["path"])
-        if snapshot(path) != row["before"]:
-            raise ValueError("Destination changed during planning; rerun sync")
-        entry = {k: v for k, v in row.items() if k not in {
-            "data", "overlay_check", "overlay_dependencies", "overlay_ownership_before", "required_overlay_checks"}}
-        if row["before"]["kind"] == "file":
-            entry["backup_file"] = f"{i:05d}.bin"
-            data = path.read_bytes()
-            if digest(data) != row["before"]["sha256"]:
-                raise ValueError("Destination changed while backing up; rerun sync")
-            atomic_write(backup / entry["backup_file"], data)
-        manifest["changes"].append(entry)
-    atomic_write(backup / "manifest.json", json.dumps(manifest, indent=2).encode())
+    # Back up and verify every destination before changing any destination. Nothing has been
+    # changed yet if this fails, so a partial rollback copy is discarded rather than left behind.
+    try:
+        for i, row in enumerate(changes):
+            path = Path(row["path"])
+            if snapshot(path) != row["before"]:
+                raise ValueError("Destination changed during planning; rerun sync")
+            entry = {k: v for k, v in row.items() if k not in {
+                "data", "overlay_check", "overlay_dependencies", "overlay_ownership_before", "required_overlay_checks"}}
+            if row["before"]["kind"] == "file":
+                entry["backup_file"] = f"{i:05d}.bin"
+                data = path.read_bytes()
+                if digest(data) != row["before"]["sha256"]:
+                    raise ValueError("Destination changed while backing up; rerun sync")
+                atomic_write(backup / entry["backup_file"], data)
+            manifest["changes"].append(entry)
+        atomic_write(backup / "manifest.json", json.dumps(manifest, indent=2).encode())
+    except Exception:
+        _discard_backup(backup)
+        raise
     try:
         verify_source(config_preconditions)
         if intent:
