@@ -17,7 +17,7 @@
 先按锁定的公开版本安装源码和依赖：
 
 ```powershell
-git submodule update --init --recursive
+python -m pip install -e "$(git config --get fleet.guards)"
 python -m pip install -r requirements-dev.txt
 ```
 
@@ -161,12 +161,12 @@ Codex memory consolidation
 - Claude memory 目录存在并包含 `MEMORY.md`；
 - Codex memories 已启用，且目标 memories 根目录存在并包含 `extensions\ad_hoc\instructions.md`。
 
-两个入口都使用共享的 Python 核心，不需要额外 PowerShell 模块。克隆仓库后，初始化子模块并安装 Python 依赖：
+两个入口都使用共享的 Python 核心，不需要额外 PowerShell 模块。克隆仓库后，先安装 `git config fleet.guards` 指向的本机 fleet-guards checkout，再安装 Python 依赖：
 
 ```powershell
 git clone https://github.com/DaizeDong/claude-codex-memory-sync.git
 Set-Location .\claude-codex-memory-sync
-git submodule update --init --recursive
+python -m pip install -e "$(git config --get fleet.guards)"
 python -m pip install -r requirements-dev.txt
 ```
 

@@ -1,4 +1,3 @@
-# Install from the repository root after recursive submodule checkout.
-./guards
+# Install from the repository root after: pip install -e "$(git config --get fleet.guards)"
 skill-smith @ git+https://github.com/DaizeDong/skill-smith.git@fe38b760ea59d179de6bcde7ac16381756a3c238
 .

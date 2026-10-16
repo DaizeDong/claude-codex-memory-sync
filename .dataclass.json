@@ -4,7 +4,7 @@
     "TOOL    = code, SKILL.md, docs. Public, hand-written, contains no data.",
     "FIXTURE = tests and examples. Public, but SYNTHETIC and produced by a generator.",
     "DATA    = anything a real run produced. Never stored in this public tool repository; durable backups belong in the operator's private configuration repository.",
-    "Enforced by tools/data_boundary.py, in .githooks and in CI.",
+    "Enforced by fleet-guards tools/data_boundary.py through the .githooks shims (git config fleet.guards).",
     "",
     "This repo is a pure transform: it resolves the operator's Claude memory directory, reads the",
     "MEMORY.md index and the .md files beside it, and writes per-memory files into the Codex home.",

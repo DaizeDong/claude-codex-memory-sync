@@ -17,7 +17,7 @@ Use `sync-all.cmd` for supported profile components. It requires **Python 3.11 o
 Install the source checkout and its dependencies from the pinned public revisions:
 
 ```powershell
-git submodule update --init --recursive
+python -m pip install -e "$(git config --get fleet.guards)"
 python -m pip install -r requirements-dev.txt
 ```
 
@@ -174,12 +174,12 @@ Requirements:
 - a Claude memory directory containing `MEMORY.md`;
 - Codex memories enabled, with an existing memories root and `extensions\ad_hoc\instructions.md` beneath it.
 
-Both entry points use the shared Python core. No additional PowerShell modules are needed. Clone the repository, initialize its submodules, and install the Python dependencies:
+Both entry points use the shared Python core. No additional PowerShell modules are needed. Clone the repository, install the local fleet-guards checkout named by `git config fleet.guards`, and install the Python dependencies:
 
 ```powershell
 git clone https://github.com/DaizeDong/claude-codex-memory-sync.git
 Set-Location .\claude-codex-memory-sync
-git submodule update --init --recursive
+python -m pip install -e "$(git config --get fleet.guards)"
 python -m pip install -r requirements-dev.txt
 ```
 

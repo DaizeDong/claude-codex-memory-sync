@@ -4,6 +4,10 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+### Changed
+
+- Privacy hooks now run from the local fleet-guards checkout named by `git config fleet.guards`, and the dash check from `fleet.style`; the `guards/` and `style/` submodules and the CI gate and fleet-sync workflows are removed. Install `fleet_guards` with `pip install -e "$(git config --get fleet.guards)"`.
+
 ### Fixed
 
 - A table that another writer put inside a managed `config.toml` block no longer
