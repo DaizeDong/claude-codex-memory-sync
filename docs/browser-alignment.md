@@ -9,11 +9,11 @@ Adoption accepts a direct `npx @playwright/mcp` invocation or the canonical
 existing absolute Python interpreter, its companion CJS hook, `pw-auth.py` and
 `pw_storage_paths.py`, and arguments of the form
 `[launcher, "--", npx, "@playwright/mcp", ...]`. Other wrappers are rejected.
-Both forms require the source to use `--isolated`, the complete `shared.json` under `PW_AUTH_CONFIG`,
-and the output directory selected by `PW_MCP_OUTPUT_DIR`. Both settings come from
+Both forms require the source to use `--isolated`, the `store` directory under `PLAYWRIGHT_CONFIG`
+as `--storage-state`, and the output directory selected by `PW_MCP_OUTPUT_DIR`. Both settings come from
 `claude_home/settings.json`'s `env` object and must be nonempty strings that expand to absolute paths;
-the source launch arguments must resolve to those same locations. The shared file
-must already exist. Planning checks its existence without opening it. Remote
+the source launch arguments must resolve to those same locations. The store
+directory must already exist. Planning checks its existence without opening it. Remote
 connections, persistent profiles, arbitrary configuration files,
 duplicate policy flags, and incomplete source policies are rejected.
 
@@ -74,34 +74,25 @@ this planner; changing the checkout does not replace installed package files.
 
 ## Source helpers
 
-The existing source `pw_isolation_guard.py` now exposes three explicit modes:
+The existing source `pw_isolation_guard.py` exposes two explicit modes:
 
 - `--check-codex-config <config.toml>` checks the direct launch policy and
-  whether shared state equals the union computed by the existing `pw-auth.py`.
-  This mode is read-only, prints a fixed error on failure, and exits nonzero.
-- `--prepare-shared-state` calls the existing `absorb` and, when necessary,
-  `merge`. It uses every store shard, including origins, and never constructs
-  an empty replacement seed. With no pending exports and an up-to-date union,
-  it does not rewrite state or create another backup.
-- `--repair-isolation-only` prepares state and repairs Claude plugin definitions
-  without invoking cache pruning. The existing PowerShell setup entrypoint is
-  now a thin caller of this mode.
+  that the store directory exists. This mode is read-only, prints a fixed error
+  on failure, and exits nonzero.
+- `--repair-isolation-only` repairs Claude plugin definitions without invoking
+  cache pruning. The existing PowerShell setup entrypoint is a thin caller of
+  this mode.
 
-All three modes return before the legacy Claude cache-pruning branch. Codex must
-never invoke the guard's default Claude maintenance mode. The prepare and repair
-modes change state and must be called only by an authorized operator entrypoint.
+Both modes return before the legacy Claude cache-pruning branch. Codex must
+never invoke the guard's default Claude maintenance mode. The repair mode
+changes state and must be called only by an authorized operator entrypoint.
 The read-only check is suitable for a launcher that honors a nonzero result
 **before** it starts the Playwright MCP process. No event timing assumption is
 needed. Existing processes require a later reconnect to use changed arguments.
 
-After any browser navigation, export the **entire context** into a uniquely
-named file in the configured incoming directory, then call the existing `pw-auth.py absorb`
-before the context closes. Never export over `shared.json`, select only one
-site as the seed, or switch to a shared persistent profile. The export reminder
-now inspects the configured output directory as well as legacy cwd artifacts.
-Its shared timestamps are a reminder, not proof that a particular session saved
-its state. Stop jobs run `absorb` before the reminder even if source groups are
-reordered. Child output remains suppressed.
+The session launcher seeds each MCP process from the store and its hook saves
+the context's cookies back after navigation, periodically and before exit. No
+manual export or Stop job is involved. Never switch to a shared persistent profile.
 
 ## Explicit checks and earlier hook integration
 

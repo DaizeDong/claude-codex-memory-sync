@@ -13,24 +13,14 @@ import time
 
 
 BROWSER_CONTEXT = (
-    "Playwright must always launch with --isolated and the full shared union as "
-    "its storage-state seed. After browser use, export the entire context to a "
-    "unique file in the configured auth incoming directory using storageState with indexedDB:true, "
-    "then run the existing pw-auth.py absorb "
-    "entrypoint before closing. Never overwrite shared.json with one context. "
+    "Playwright must always launch through pw-mcp-session.py with --isolated and the "
+    "store directory under PLAYWRIGHT_CONFIG as its storage-state; the launcher seeds each session and "
+    "its hook saves logins back automatically, so no manual export is needed. "
     "SessionStart checks do not guarantee execution before MCP bootstrap. "
     "Changed MCP launch arguments require a reconnect of existing sessions."
     " Inspect tools/list: recent Playwright versions name the code tool "
     "browser_run_code_unsafe; older versions use browser_run_code."
 )
-
-PW_EXPORT_ADVISORY = (
-    "pw_export_guard.py: reminder: after browser use, export the entire context "
-    "to a unique file in the configured auth incoming directory using "
-    "context.storageState({path: '<absolute incoming filename>', indexedDB:true}), "
-    "then run the existing pw-auth.py absorb entrypoint before closing."
-)
-
 
 def patch_paths(payload):
     """Map the release's raw apply_patch command to local destination paths.
@@ -146,12 +136,7 @@ def dispatch(jobs, event, payload):
                     failed.append(job["name"] + ": source document budget feedback; review edited managed documents")
             else:
                 result = run_source(job)
-                # This guard documents exit-zero stderr as an export reminder.
-                # Keep other jobs' stderr handling and all failures unchanged.
-                if (event == "Stop" and job["name"] == "pw_export_guard.py"
-                        and result.returncode == 0 and result.stderr):
-                    advisories.append(PW_EXPORT_ADVISORY)
-                elif result.returncode or result.stderr:
+                if result.returncode or result.stderr:
                     failed.append(job["name"] + ": failed")
         except Exception:
             # Exception strings and both child streams may contain credentials.

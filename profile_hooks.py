@@ -24,7 +24,7 @@ from profile_bridge import hook_runtime
 
 
 _OWNER = "claude-codex-profile-sync-stop-hooks"
-_APPROVED = {"pw-auth.py": ["absorb"], "pw_export_guard.py": []}
+_APPROVED = {}
 _ENTRYPOINTS = {
     "SessionStart": {"pw_isolation_guard.py": []},
     "PostToolUse": {"doc-budget/doc_budget.py": []},
@@ -380,8 +380,6 @@ def plan_hooks(claude_home: Path, codex_home: Path, *, plugin_roots=()) -> tuple
                 row["status"] = "pending"
                 job["event"] = "Stop"
                 jobs.append(job)
-    # Absorb must precede the export reminder even if source groups were reordered.
-    jobs.sort(key=lambda job: 0 if job["name"] == "pw-auth.py" else 1)
     for check in report["entrypoint_checks"]:
         status = check.get("status")
         if status == "unavailable":

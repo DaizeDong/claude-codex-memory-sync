@@ -45,7 +45,7 @@ python -m pip install -r requirements-dev.txt
 | 项目 `CLAUDE.md` | 增加兼容的项目文档回退设置，保留 Codex 原有项目指令。 |
 | 兼容的用户和已启用插件 MCP 定义 | 增量合并 `config.toml` 受管区块；现有原生 MCP 名称优先，缺失环境变量和不支持的传输或设置会列入报告。别的写入方塞进受管区块里的整张表（Codex 桌面版会把新表追加在它认识的最后一张表后面）会被挪到区块之后，前提是区块其余部分仍与记录的哈希一致、解析后的配置完全不变；挪动记在 `config.foreign_tables`，apply 之后也记在运行结果的 `foreign_tables_relocated`。区块内其他改动仍判冲突。 |
 | 所有非空项目记忆目录 | 归档到 `~/.codex/imports/claude-memory/`，生成项目索引；经明确授权后，由持久 outbox 向 `ad_hoc` 投递小型增量说明。 |
-| Claude hooks | 为 SessionStart、PostToolUse 和 Stop 提供已审阅的适配器，覆盖浏览器隔离检查、文档预算反馈和登录态导出/吸收；保留现有 Codex hooks，明确报告不支持的源命令。启动命令用正在运行的环境的基础解释器跑桥接脚本，从不写虚拟环境自己的 `python.exe`，用户家目录下的路径经 `$env:USERPROFILE`（`command` 里是 `$HOME`）表达。运行时可能需要原生信任及新会话。 |
+| Claude hooks | 为 SessionStart、PostToolUse 和 Stop 提供已审阅的适配器，覆盖浏览器隔离检查和文档预算反馈；保留现有 Codex hooks，明确报告不支持的源命令。启动命令用正在运行的环境的基础解释器跑桥接脚本，从不写虚拟环境自己的 `python.exe`，用户家目录下的路径经 `$env:USERPROFILE`（`command` 里是 `$HOME`）表达。运行时可能需要原生信任及新会话。 |
 
 这套实现用于**同一台机器**：链接的 skills 和适配后的本地脚本仍依赖原安装目录，不是换机可独立使用的完整复制。同步保留 Codex 当前模型、provider、认证和权限配置，不导入 Claude 登录及会话状态。
 

@@ -28,13 +28,11 @@ another interpreter. A changed handler command changes its native trust hash.
 
 SessionStart runs the declared source `pw_isolation_guard.py` only with
 `--check-codex-config` and the absolute Codex config path. This is the source's
-read-only mode. It neither absorbs browser state nor prunes the Claude plugin
-cache. The source script and its adjacent `pw-auth.py` dependency are pinned by
-hash. Installing a changed source requires a fresh profile sync.
+read-only mode. It neither writes browser state nor prunes the Claude plugin
+cache. The source script is pinned by hash. Installing a changed source requires a fresh profile sync.
 
 Its `hookSpecificOutput.additionalContext` reminds the agent to keep Playwright
-isolated, use the full shared union, export the entire browser context to a
-unique incoming file, and run the existing absorb entrypoint before closing.
+isolated and launched through the session launcher, which saves logins automatically.
 It also points to the enabled superpowers plugin's existing
 `skills/using-superpowers/SKILL.md`. The source text is not copied into the hook
 output. Platform-specific agent instructions must be adapted to the installed
@@ -57,7 +55,7 @@ successful patch input. It does not scrape human-readable output for paths or
 accept guessed object response schemas. Shell-intercepted patches, remote
 environment selection, wrappers and other tools remain outside this adapter.
 
-Stop retains the reviewed absorb-before-export-reminder order. All subprocess
+No Stop source command is reviewed for adaptation at present. All subprocess
 stdout, stderr and exception details are suppressed. Fixed failures and document
 feedback become nonblocking Codex messages; startup and edit feedback also reach
 the model through the event's additionalContext field.
