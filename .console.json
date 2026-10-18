@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "component": "claude-codex-memory-sync",
-  "read": "task-console-status --configured",
+  "read": "background-task-core-status --configured",
   "tasks": [
     {
       "id": "syncclaudetocodex",
