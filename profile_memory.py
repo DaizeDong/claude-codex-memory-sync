@@ -270,10 +270,9 @@ def plan_memory(claude_home: Path, codex_home: Path, *, request_id=None, scope=N
     ingress_available = memory_outbox.contract_available(codex_home)
     note_needed = False
     try:
-        intent = memory_outbox.plan(codex_home, source_root, source_hash, report["scope"],
-                                    request_id=request_id, scope=scope, periodic=periodic, records=records,
-                                    canonical_sources=canonical_sources, complete_projects=complete_projects,
-                                    snapshot_complete=not skipped)
+        intent = memory_outbox.plan(codex_home, source_root, report["scope"], canonical_sources,
+                                    request_id=request_id, scope=scope, periodic=periodic,
+                                    complete_projects=complete_projects, snapshot_complete=not skipped)
         plans.delivery = intent
         report["delivery"] = memory_outbox.metadata(intent)
         report["mode"] = "ingress" if intent.grant else "archive"
@@ -286,18 +285,17 @@ def plan_memory(claude_home: Path, codex_home: Path, *, request_id=None, scope=N
         if not history_error:
             report["ingress_reason"] = "invalid_or_conflicting_authorization"
             try:
-                plans.delivery = memory_outbox.plan(codex_home, source_root, source_hash,
-                                                    report["scope"], records=records, archive_only=True,
-                                                    canonical_sources=canonical_sources, complete_projects=complete_projects,
+                plans.delivery = memory_outbox.plan(codex_home, source_root, report["scope"], canonical_sources,
+                                                    archive_only=True, complete_projects=complete_projects,
                                                     snapshot_complete=not skipped)
             except memory_outbox.HistoryConflict:
                 history_error = True
                 report["delivery"] = {"delivery_state": "history_conflict", "reason": "history_requires_review"}
         if history_error:
-            legacy_source, legacy_note = _prior_index(index_path)
-            plans.recovery_evidence = {"version": 1, "migration": "T09", "reason": "history_requires_review",
-                                       "legacy_source_hash": legacy_source, "legacy_note_hash": legacy_note}
-            report["delivery"].update(migration="T09", legacy_evidence=plans.recovery_evidence)
+            index_source, index_note = _prior_index(index_path)
+            plans.recovery_evidence = {"version": 1, "reason": "history_requires_review",
+                                       "index_source_hash": index_source, "index_note_hash": index_note}
+            report["delivery"].update(recovery="reset_outbox", evidence=plans.recovery_evidence)
 
     index = [
         "# Claude memory archive", "",

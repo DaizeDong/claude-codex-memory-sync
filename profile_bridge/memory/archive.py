@@ -83,8 +83,9 @@ def plan(plans, desired, codex, source_root, *, complete_projects, snapshot_comp
     """Add reversible writes and reviewed retirements to a MemoryPlan.
 
     Equal clean source/destination bytes may acquire ownership without mutation.
-    Every generated hash remains recognized across prepare/crash/rollback. Unknown
-    bytes are never inferred to be owned from a filename or an index marker.
+    Each file keeps at most the hash being written and the owned hash in place,
+    which is what prepare/crash/rollback can leave. Unknown bytes are never
+    inferred to be owned from a filename or an index marker.
     """
     root = Path(codex) / 'imports/claude-memory'
     source_root = outbox._root(source_root)
@@ -130,7 +131,11 @@ def plan(plans, desired, codex, source_root, *, complete_projects, snapshot_comp
             result['preserved'].append(dict(path=str(path), sha256=current[2], reason='destination_modified'))
             result['blocked'] = True
             continue
-        hashes = set(known.get(key, [])) | {digest}
+        # Recognize what this run writes and what it may leave behind (a crash or
+        # rollback before the write): the new bytes plus the owned bytes in place.
+        hashes = {digest}
+        if current and current[2] in generated.get(key, set()):
+            hashes.add(current[2])
         if approved:
             hashes.add(current[2])
             result['adoptions'].append(dict(path=str(path), sha256=current[2], review_id=reviews[key]['review_id']))
@@ -165,6 +170,9 @@ def plan(plans, desired, codex, source_root, *, complete_projects, snapshot_comp
         plans.retirements[path] = metadata
         plans[path] = None
         result['retirements'].append(dict(path=str(path), **metadata))
+    # A key neither wanted nor on disk has nothing left to recognize.
+    for stored in [p for p in owned_files if p.casefold() not in wanted and p.casefold() not in actual]:
+        del owned_files[stored]
     if result['blocked']:
         plans.clear()
         plans.retirements.clear()

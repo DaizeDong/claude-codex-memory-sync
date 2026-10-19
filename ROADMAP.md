@@ -23,17 +23,11 @@ is in [CHANGELOG.md](CHANGELOG.md).
 - `run_profile_sync.py` as a deterministic entry point for an existing scheduler, with a
   status file, a success marker published only after verification, and an exit code that
   separates deliberate exclusions from faults.
-- The memory-only bridge `sync-memory.cmd` for a single project: direct `*.md` selection,
-  sensitive-filename and hard-credential checks that block the whole batch, bounded
-  inputs, incremental deduplication against existing notes, and atomic note publication
-  under a destination-derived mutex.
 - Native Windows 8.3 aliases for hook and custom plugin paths, with idempotent
   planning and unchanged plugin-local and destination-link protections.
 
 ## Planned
 
-- **Additional tested platforms.** The memory-only bridge is tested on Windows
-  PowerShell 5.1. PowerShell 7 and non-Windows hosts are not supported or measured.
 - **Cross-machine portability.** Linked skills and adapted scripts currently
   depend on the source installation; portability needs explicit copying and
   dependency rules.

@@ -11,6 +11,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Fixed
 
+- The memory outbox history no longer grows with every run. It kept the full text of every version of every memory file, a delivery row per run listing every head, every prepared note and every archive hash ever written; `history.json` passed its 16 MiB read limit on 2026-10-13 and every run after that stopped at `history_conflict` with the archive frozen. History version 2 keeps only the latest event of each file (hashes and predecessor link, no text), prunes delivery rows to the ones still read, removes a prepared note once its row is no longer pending, and keeps at most two archive hashes per path; the chain is validated link by link over the kept rows. An older history is not migrated: it stops delivery until the outbox is reset as described in `docs/MEMORY_OUTBOX.md`.
 - A runtime-policy alternative under `llmcall-tasks/alternatives/` is now retired as soon as the policy stops selecting it (reason `runtime_policy_withdrawn`). Before, its files stayed owned and were reported `plugin_install_unavailable` every run once their source had moved away, which is what Codex did to the legacy slides and spreadsheets skills, so the task exited `2` with nothing anyone could act on.
 - A table that another writer put inside a managed `config.toml` block no longer
   turns the whole configuration into a conflict. The Codex desktop app appends new
@@ -29,6 +30,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Removed
 
+- The single-project memory entry `sync-memory.cmd` / `sync-claude-memory-to-codex.ps1` and its adapter `profile_bridge.memory.compat`, together with the old CCMS note import (`memory.legacy`), the per-file previous/current note format (`memory.ingress`) and the cross-home history migration (`memory.restore`). Per-file notes quoted the previous text of each file, which is what required every version in the history; nothing ran the entry, and the backup no longer carries outbox state between homes.
 - The test suite, its fixture generator and the CI test workflow, per the rule that a
   confirmed-working feature keeps no tests.
 - The browser alignment test no longer depends on the Playwright storage helper

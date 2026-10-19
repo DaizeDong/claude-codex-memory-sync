@@ -1,10 +1,6 @@
-# Memory authorization and durable outbox (schema 1)
+# Memory authorization and durable outbox (history version 2)
 
-The Python profile bridge archives by default. T09 embeds canonical source history
-in this outbox; the PowerShell entry is now a shell over the same Python publisher.
-See [canonical history and restoration](MEMORY_CANONICAL.md) for per-file ingress,
-legacy aliases, and the explicit cross-home migration API. Earlier schema-1
-records remain readable and retain their original publication evidence.
+The Python profile bridge archives by default and delivers to Codex only under an explicit grant. The outbox keeps what delivery needs and nothing more: the latest event of each memory file (see [the canonical ledger](MEMORY_CANONICAL.md)), the delivery rows still needed to chain, deduplicate and recover, and the archive ownership hashes. A history in any earlier format stops delivery; the fix is the reset below, not a migration.
 
 ## Public entry points
 
@@ -89,22 +85,19 @@ not a concurrent writer protocol; controllers should use the API.
 
 Private runtime directory: `<codex_home>/claude-sync/memory-outbox/`.
 
-- `history.json`: the authoritative increment chain, request bindings, delivery
-  state, and receipts. Persisted with shared `atomic_replace`.
-- `prepared/<increment_id>.md`: immutable expected note bytes, created through
-  shared `create_no_replace`. These are durable recovery evidence, not disposable
-  processing queue files. Retain them after publication and native consumption.
-- `history-conflict.json`: first metadata-only migration evidence, when legacy or
-  damaged history is discovered. Its presence blocks delivery until T09 explicitly
-  resolves the evidence. Archive updates can continue.
+- `history.json`: the canonical ledger, the retained delivery rows, request bindings, delivery state, receipts and archive ownership. Persisted with shared `atomic_replace`.
+- `prepared/<increment_id>.md`: immutable expected note bytes, created through shared `create_no_replace` before publication. They are needed only while their row is `prepared` or `publication_started`; the next `prepare` removes the rest, since `render_note` reproduces any of them from the row.
+- `history-conflict.json`: metadata-only evidence written the first time history cannot be read (damaged, missing next to an existing archive, or in an older format). Its presence blocks delivery until the outbox is reset.
 
 `history.json` has this structure (angle-bracket values describe types):
 
 ```text
 {
-  version: 1,
+  version: 2,
   algorithm: "sha256",
   normalization: "archive-utf8-controls-v1",
+  canonical: <the per-file ledger, MEMORY_CANONICAL.md>,
+  archive_ownership: <archive hashes, MEMORY_ARCHIVE_HYGIENE.md>,
   requests: { <one-shot request_id>: <increment_id>, ... },
   records: [
     {
@@ -112,7 +105,8 @@ Private runtime directory: `<codex_home>/claude-sync/memory-outbox/`.
       predecessor: <prior increment_id in this root/scope stream, or null>,
       source_root: <normalized absolute projects root>,
       scope: [<exact project keys>],
-      source_hash: <64 lowercase hex>,
+      source_hash: <canonical snapshot digest of this root and scope>,
+      canonical_increments: [<sorted head increment IDs of that snapshot>],
       request_id: <first delivery request ID, or null for archive-only>,
       periodic: <boolean>,
       delivery_state: <state below>,
@@ -129,19 +123,25 @@ Private runtime directory: `<codex_home>/claude-sync/memory-outbox/`.
 }
 ```
 
-`note_identity` appears only after native creation was observed. `receipt` appears
-only for `published`. `archive_only` records have no prepared file, identity, or
-receipt. Native note paths are derived, never accepted from a report:
-`<codex_home>/memories/extensions/ad_hoc/notes/claude-memory-<increment_id>.md`.
+`note_identity` appears only after native creation was observed. `receipt` appears only for `published`. `archive_only` records have no prepared file, identity, or receipt. Native note paths are derived, never accepted from a report: `<codex_home>/memories/extensions/ad_hoc/notes/claude-memory-<increment_id>.md`.
+
+### Which rows are kept
+
+Every plan prunes `records` to the rows delivery still reads:
+
+1. The newest row of each root/scope stream: it is the next row's predecessor and the "has the snapshot changed" comparison.
+2. The newest row of each stream in a state that represents its heads to Codex (anything except `archive_only`, `cancelled` and `superseded`). A head that is still current was in that row if it was in any earlier one, so its `canonical_increments` decide whether a new snapshot is already `aliased`.
+3. Rows that are still pending (`prepared`, `publication_started`) or unresolved (`delivery_unknown`, `conflict`, `cancelled`), which the report keeps listing.
+4. Rows bound to a one-shot request.
+
+Everything else, including old `published` rows and their receipts, is dropped. Rows of one stream stay in append order, so validation checks the chain link by link: each increment ID is the hash of its own predecessor and snapshot, IDs are unique, no two kept rows of a stream share a predecessor, and a predecessor that is still kept comes earlier in the same stream. A predecessor that was dropped is a hash link only. The history stays a few hundred kilobytes whatever the run count.
 
 Canonical increment input is the object `{version: 1, algorithm: "sha256",
 normalization: "archive-utf8-controls-v1", source_root, scope, source_hash,
 predecessor}`, serialized by `json.dumps(sort_keys=True, ensure_ascii=True,
 indent=2) + '\n'`, encoded as UTF-8, then SHA-256 hashed. It includes the predecessor
 increment ID, not only the preceding source hash. A → B → A → B produces four
-identities. Request IDs do not affect increment identity. The existing archive
-snapshot hash format remains supported; a named scope hashes only its selected
-source records and scope mapping.
+identities. Request IDs do not affect increment identity. `source_hash` is the canonical snapshot digest, so a named scope hashes only the heads of its own projects.
 
 ## Publication and recovery
 
@@ -173,7 +173,7 @@ source records and scope mapping.
 If an exact surviving note has a persisted matching identity, recovery can record
 the receipt. The smaller create-to-identity-record window is deliberately unknown,
 even with matching bytes: identical replacement files cannot prove ownership.
-Already-published receipts remain valid publication evidence after consumption.
+A published receipt stays valid publication evidence after consumption for as long as its row is kept; once a newer row of the stream represents the heads, the old row and its receipt are dropped.
 
 An identical-content competitor replacing the pathname between creation and
 identity persistence is a conflict when its identity differs from the opened
@@ -186,11 +186,16 @@ helpers. POSIX pathname linking assumes a trusted cooperative staging directory;
 device/inode evidence cannot exclude hostile staging swaps or eventual inode
 reuse, and it does not establish a portable identity after restore.
 
-Missing, empty, malformed, inconsistent, or truncated history with orphaned
-prepared files is a conflict, not a fresh install. Prepared-file corruption and
-missing/invalid receipts also block delivery. Legacy index hashes are retained in
-`history-conflict.json` before the source-only index is rewritten. T09 must verify
-old envelopes/aliases; this task does not silently reimport them.
+Missing, empty, malformed, inconsistent, or truncated history is a conflict, not a fresh install, and so is a history in an older format. Prepared-file corruption for a pending row and missing/invalid receipts also block delivery. The index hashes of the archive are retained in `history-conflict.json` before the source-only index is rewritten.
+
+### Resetting the outbox
+
+The one way out of a history conflict is a fresh history under the same grant:
+
+1. Stop the sync (let a running `SyncClaudeToCodex` finish).
+2. Delete `<codex_home>/claude-sync/memory-outbox/` and the archive `<codex_home>/imports/claude-memory/`. The archive is generated from Claude memory and its ownership hashes lived in the deleted history, so a kept archive would read as user-edited and block. Check first that no archive file was edited by hand: every file's SHA-256 should appear under its path in the old `archive_ownership`.
+3. In `memory-authorizations.json` set `history_initialized` to `false`. Leave `grants` exactly as they are.
+4. Run the sync once. It rebuilds the archive, writes a new history and publishes one new note for the current snapshot. Native notes already in Codex stay where they are.
 
 All public writes use the T01 profile resource locks. These locks serialize
 cooperating sync/backup/controller writers; they do not lock out Codex consumers
@@ -199,52 +204,12 @@ publication is atomic, POSIX directory fsync failures propagate, and Windows
 portable directory-entry power-loss durability is not guaranteed. No exactly-once
 claim is made for native consumption.
 
-## Controller CONFIG requirements
+## Backup and restore
 
-The controller owns changes to CONFIG. Before deployment it must include
-`claude-sync/memory-authorizations.json` and the complete `claude-sync/memory-outbox/`
-in the private profile capture/restore policy, drift checking, and required payload
-validation. Include `history.json`, all prepared notes (including published and
-unknown records), and any `history-conflict.json`. These files are durable state;
-do not classify prepared notes as an excluded temporary queue. Ignore only the
-shared atomic writer's unpublished `.fleet-guards-*` temporary files.
+The private configuration backup captures only `claude-sync/memory-authorizations.json`, rewritten with `history_initialized: false`. The outbox and the archive are not captured: after a restore the first sync starts a fresh history from the restored Claude memory under the same grant, the same state the reset above produces. Native notes belong to Codex and this bridge never rewrites them.
 
-Capture under the established backup-then-sorted-profile/skills lock order. Restore
-must preserve newer destination history, grants, revoked states, unknown outcomes,
-and native notes. Do not overwrite a newer ledger with an older snapshot or reset
-history to an empty file. A partial restored set must report conflict. Restoring an
-unpublished attempt onto another machine cannot establish whether the original
-machine published or consumed its note. OS file identities are not portable.
+Rollback of a profile apply intentionally preserves the full outbox and all native notes.
 
-Records and expected note bytes bind absolute source/archive roots. Cross-home
-restore needs the controller's T08/T09 validated remap/alias procedure; copying
-these bytes to another root must remain a conflict, not synthesize successful
-receipts or reauthorize delivery. Do not rewrite native registry, summary,
-evidence, or database files. This T03 implementation does not change CONFIG,
-active tasks, deployed profiles, or the legacy PowerShell history engine.
+### Pure state validation
 
-Rollback of a profile apply intentionally preserves the full outbox and all
-native notes. Code rollback must target a version that understands this outbox;
-reverting to the index-as-receipt implementation would lose the safety contract.
-
-### Pure state validation and producer fixture
-
-`profile_bridge.memory_outbox.validate_restore_state(codex_home, files)` validates
-a captured dependency group without filesystem reads or writes. `files` maps
-Codex-relative POSIX names to original bytes, for example
-`claude-sync/memory-authorizations.json` and
-`claude-sync/memory-outbox/prepared/<increment_id>.md`. Strip CONFIG's `.codex/`
-payload prefix before calling. The validator shares the runtime history/grant
-schema checks and verifies prepared membership, envelopes, predecessor chains,
-request bindings, receipts, initialization witness, and grant scope/root bindings.
-It returns metadata counts/states/revoked request IDs or raises `HistoryConflict`.
-An authorization-only group is valid before history initialization. An existing
-`history-conflict.json`, a partial group, or changed root-bound envelopes requires
-review; validation never repairs or removes that evidence.
-
-This proves internal consistency of captured bytes only. CONFIG must still hold
-the agreed locks, enforce the whole dependency group, compare destination bytes
-and freshness, preserve newer revocations, and block cross-home restore pending
-T08/T09 aliases. Validation is not permission to overwrite, reactivate grants,
-reinterpret `delivery_unknown`, or claim current ownership of a native file.
-
+`profile_bridge.memory_outbox.validate_restore_state(codex_home, files)` validates a captured group without filesystem reads or writes. `files` maps Codex-relative POSIX names (strip the `.codex/` payload prefix) to original bytes. An authorization-only group is valid while `history_initialized` is false, which is the form the backup writes. A group with `history.json` must also say `history_initialized: true` and carry the prepared bytes of every pending row, and it passes the same history and grant checks as a runtime read. The validator returns metadata counts, states and revoked request IDs or raises `HistoryConflict`. It proves internal consistency only, not freshness or permission to overwrite.

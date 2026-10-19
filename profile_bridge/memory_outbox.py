@@ -24,28 +24,12 @@ NORMALIZATION = "archive-utf8-controls-v1"
 STATES = {'archive_only', 'prepared', 'publication_started', 'published',
           'delivery_unknown', 'conflict', 'cancelled', 'superseded', 'aliased'}
 NOTE_LIMIT = 3 * 1024 * 1024
-STATE_SCAN_SECONDS = 30.0
-
-
-def scan_state_credentials(raw):
-    """Scan complete serialized durable state for migration and opaque backup.
-
-    This owner enforces the durable byte ceiling before decoding. Source bodies
-    and native memory use their existing default scanner budgets instead.
-    Findings retain the shared scanner's character offsets into UTF-8 text.
-    """
-    from fleet_guards import secrets
-    if not isinstance(raw, bytes) or len(raw) > LIMIT:
-        raise ValueError('memory_state_credential_scan_failed')
-    try:
-        text = raw.decode('utf-8')
-    except UnicodeDecodeError as exc:
-        raise ValueError('memory_state_credential_scan_failed') from exc
-    result = secrets.scan(text, policy='credential-shapes-v1',
-                          max_text_chars=LIMIT, seconds=STATE_SCAN_SECONDS)
-    if result['state'] not in {'clean', 'findings'}:
-        raise ValueError('memory_state_credential_scan_failed')
-    return result['findings']
+HISTORY_VERSION = 2
+# Rows whose expected note may still be published or verified against prepared bytes.
+PENDING = {'prepared', 'publication_started'}
+UNRESOLVED = {'publication_started', 'delivery_unknown', 'conflict', 'cancelled'}
+# Rows that already represent their canonical heads to Codex (or are about to).
+UNCOVERED = {'archive_only', 'cancelled', 'superseded'}
 
 
 def sha(data):
@@ -187,11 +171,9 @@ def select_authorization(codex, source_root, *, request_id=None, scope=None, per
     return (grants[0], False) if grants else (None, False)
 
 
-def contract_available(codex, memories_root=None):
+def contract_available(codex):
     try:
-        root = Path(memories_root) if memories_root else Path(codex) / 'memories'
-        if root.parent != Path(codex):
-            return False
+        root = Path(codex) / 'memories'
         path = validate_path(root / 'extensions/ad_hoc/instructions.md')
         validate_path(path.parent / 'notes')
         return bool(read_bounded(path, 1024 * 1024).strip())
@@ -200,10 +182,7 @@ def contract_available(codex, memories_root=None):
 
 
 def native_note_path(record, codex):
-    root = Path(record.get('memories_root', Path(codex) / 'memories'))
-    if root.parent != Path(codex):
-        raise ValueError('invalid_native_memory_root')
-    return root / 'extensions/ad_hoc/notes' / f"claude-memory-{record['increment_id']}.md"
+    return Path(codex) / 'memories/extensions/ad_hoc/notes' / f"claude-memory-{record['increment_id']}.md"
 
 
 def increment_id(source_root, scope, source_hash, predecessor):
@@ -214,9 +193,6 @@ def increment_id(source_root, scope, source_hash, predecessor):
 
 
 def render_note(record, codex):
-    if record.get('format') == 'canonical-file-v1':
-        from .memory.ingress import render
-        return render(record)
     scope = json.dumps(record['scope'], ensure_ascii=True)
     return (f"# User-requested Claude memory archive update\n\n"
             f"<!-- claude-memory-increment: {record['increment_id']} -->\n"
@@ -231,7 +207,7 @@ def render_note(record, codex):
 
 
 class HistoryConflict(ValueError):
-    """History is incomplete or invalid; only an evidence-aware migration may repair it."""
+    """History is incomplete or invalid; delivery stops until the outbox is reset (docs/MEMORY_OUTBOX.md)."""
 
 
 def _read_history(codex):
@@ -254,66 +230,59 @@ def _read_history_unchecked(codex):
         if (state_root(codex).exists() or (Path(codex) / 'imports/claude-memory/index.md').exists()
                 or _authorizations(codex).get('history_initialized', False)):
             raise ValueError('missing_memory_history')
-        return {'version': 1, 'algorithm': ALGORITHM, 'normalization': NORMALIZATION, 'records': [], 'requests': {}}, None
+        return {'version': HISTORY_VERSION, 'algorithm': ALGORITHM, 'normalization': NORMALIZATION,
+                'records': [], 'requests': {}}, None
     prepared_root = state_root(codex) / 'prepared'
     prepared = {f'prepared/{p.name}': read_bounded(p, NOTE_LIMIT)
                 for p in prepared_root.iterdir()} if prepared_root.exists() else {}
     value = _validate_history(raw, codex, prepared)
     for row in value['records']:
-        native_note_path(row, codex)
         _root(row['source_root'])
     return value, sha(raw)
 
 
+def _stream(row):
+    return row['source_root'], tuple(row['scope'])
+
+
 def _validate_history(raw, codex, prepared):
-    """Shared byte/schema validation for runtime reads and captured state."""
+    """Shared byte/schema validation for runtime reads and captured state.
+
+    Only retained rows are present (see _prune), so a stream's chain is checked
+    link by link: every increment ID binds its predecessor and snapshot, IDs are
+    unique, and no two retained rows of one stream claim the same predecessor
+    or point forward. Prepared bytes are required only while a row is pending.
+    """
     value = json.loads(raw)
-    if not isinstance(value, dict) or value.get('version') != 1 or not isinstance(value.get('records'), list):
+    if (not isinstance(value, dict) or value.get('version') != HISTORY_VERSION
+            or set(value) - {'version', 'algorithm', 'normalization', 'records', 'requests',
+                             'canonical', 'archive_ownership'}
+            or not isinstance(value.get('records'), list)):
         raise ValueError('corrupt_memory_history')
     if value.get('algorithm') != ALGORITHM or value.get('normalization') != NORMALIZATION or not isinstance(value.get('requests'), dict):
         raise ValueError('corrupt_memory_history')
     if 'archive_ownership' in value:
         from .memory.archive import validate_ownership
         validate_ownership(value['archive_ownership'])
-    heads, ids = {}, set()
     if 'canonical' in value:
         from .memory.history import validate
         validate(value['canonical'])
-    if 'migration' in value:
-        migration = value['migration']
-        evidence = {k: v for k, v in migration.items() if k not in {'migration_id', 'aliases'}}
-        if migration['target_codex'] != str(codex) or migration['migration_id'] != sha(encoded(evidence)):
-            raise ValueError('invalid_memory_migration_binding')
+    ids, predecessors = set(), {}
     for row in value['records']:
-        native_note_path(row, codex)
         scope = _scope(row['scope'])
         root = _canonical_root(row['source_root'])
-        if 'canonical_increments' in row:
-            canonical = value['canonical']
-            events = {e['increment_id']: e for e in canonical['records']}
-            for inc in row['canonical_increments']:
-                source = canonical['sources'][events[inc]['source_id']]
-                if canonical['roots'][root] != source['namespace'] or (scope != ['*'] and source['project'] not in scope):
-                    raise ValueError('invalid_canonical_scope_binding')
-        stream = (root, tuple(scope), row.get('source_id'))
-        previous = heads.get(stream)
-        expected_increment = increment_id(root, scope, row['source_hash'], previous)
-        if row.get('format') == 'canonical-file-v1':
-            from .memory.core import increment_id as file_increment
-            expected_increment = file_increment(row['source_id'], row['canonical_predecessor'],
-                                                row['operation'], row['source_hash'])
-            events = {r['increment_id']: r for r in value['canonical']['records']}
-            event = events[expected_increment]
-            if any(event[k] != row[k] for k in ('source_id', 'operation', 'current')):
-                raise ValueError('invalid_canonical_delivery_binding')
-            parent = events.get(event['predecessor'])
-            if row['previous'] != (parent['current'] if parent else None):
-                raise ValueError('invalid_canonical_previous_payload')
-        if (row['predecessor'] != previous or row['increment_id'] in ids or
-                row['increment_id'] != expected_increment or
-                row['delivery_state'] not in STATES):
+        stream = (root, tuple(scope))
+        if (row['increment_id'] in ids or row['delivery_state'] not in STATES
+                or row['increment_id'] != increment_id(root, scope, row['source_hash'], row['predecessor'])):
             raise ValueError('corrupt_memory_history')
+        claimed = predecessors.setdefault(stream, set())
+        if row['predecessor'] in claimed:
+            raise ValueError('corrupt_memory_history')
+        claimed.add(row['predecessor'])
         if row['source_root'] != root or not re.fullmatch('[0-9a-f]{64}', row['source_hash']):
+            raise ValueError('corrupt_memory_history')
+        if not isinstance(row['canonical_increments'], list) or any(
+                not isinstance(i, str) or not re.fullmatch('[0-9a-f]{64}', i) for i in row['canonical_increments']):
             raise ValueError('corrupt_memory_history')
         if 'note_identity' in row:
             value_identity = row['note_identity']
@@ -327,7 +296,7 @@ def _validate_history(raw, codex, prepared):
             raise ValueError('corrupt_memory_history')
         if row['prepared_note_path'] != f"prepared/{row['increment_id']}.md":
             raise ValueError('corrupt_memory_history')
-        if row['delivery_state'] not in {'archive_only', 'aliased'}:
+        if row['delivery_state'] in PENDING:
             note = prepared[row['prepared_note_path']]
             if sha(note) != row['content_hash']:
                 raise ValueError('corrupt_prepared_note')
@@ -337,7 +306,12 @@ def _validate_history(raw, codex, prepared):
             if not row.get('note_identity') or row.get('receipt') != expected_receipt:
                 raise ValueError('missing_memory_receipt')
         ids.add(row['increment_id'])
-        heads[stream] = row['increment_id']
+    # A retained predecessor must come earlier in the same stream; a pruned one is just a hash link.
+    positions = {row['increment_id']: (index, _stream(row)) for index, row in enumerate(value['records'])}
+    for index, row in enumerate(value['records']):
+        link = positions.get(row['predecessor'])
+        if link and (link[0] >= index or link[1] != _stream(row)):
+            raise ValueError('corrupt_memory_history')
     if any(not isinstance(k, str) or v not in ids for k, v in value['requests'].items()):
         raise ValueError('corrupt_memory_request_history')
     for row in value['records']:
@@ -345,9 +319,6 @@ def _validate_history(raw, codex, prepared):
             raise ValueError('missing_memory_request_history')
     if not value['records']:
         raise ValueError('empty_memory_history')
-    expected_files = {r['prepared_note_path'] for r in value['records'] if r['delivery_state'] not in {'archive_only', 'aliased'}}
-    if set(prepared) != expected_files:
-        raise ValueError('orphaned_prepared_history')
     return value
 
 
@@ -405,89 +376,80 @@ class DeliveryPlan:
     allow_delivery: bool = True
 
 
-def plan(codex, source_root, source_hash, projects, *, request_id=None, scope=None, periodic=False, records=(), archive_only=False,
-         canonical_sources=None, complete_projects=(), snapshot_complete=False):
+def plan(codex, source_root, projects, canonical_sources, *, request_id=None, scope=None, periodic=False,
+         archive_only=False, complete_projects=(), snapshot_complete=False):
     """Read-only intent; missing/corrupt evidence is never treated as a fresh run."""
+    from .memory.history import observe, selected, snapshot_digest
     grant, new_grant = (None, False) if archive_only else select_authorization(
         codex, source_root, request_id=request_id, scope=scope, periodic=periodic)
     selected_scope = grant['scope'] if grant else ['*']
     history, expected = _read_history(codex)
-    if snapshot_complete and 'canonical' in history:
-        canonical = history['canonical']
-        namespace = canonical['roots'].get(_root(source_root))
-        complete_projects = set(complete_projects) | {s['project'] for s in canonical['sources'].values()
+    root = _root(source_root)
+    old_canonical = history.get('canonical')
+    if snapshot_complete and old_canonical:
+        namespace = old_canonical['roots'].get(root)
+        complete_projects = set(complete_projects) | {s['project'] for s in old_canonical['sources'].values()
                                                       if s['namespace'] == namespace}
     if selected_scope != ['*'] and not set(selected_scope).issubset(set(projects) | set(complete_projects)):
         raise ValueError('memory_scope_not_in_source')
-    if selected_scope != ['*']:
-        source_hash = sha(encoded({'sources': [r for r in records if r['project'] in selected_scope],
-                                   'scope': {k: projects.get(k) for k in selected_scope}}))
-    if (canonical_sources is not None and grant and not grant['periodic']
-            and grant['request_id'] in history['requests'] and 'canonical' in history):
-        bound = next(r for r in history['records'] if r['increment_id'] == history['requests'][grant['request_id']])
-        if 'canonical_increments' in bound:
-            from .memory.core import content_digest, source_id
-            canonical = history['canonical']
-            namespace = canonical['roots'][_root(source_root)]
-            current = {source_id(namespace, s['project'], s['path']): content_digest(s['text'])
-                       for s in canonical_sources if selected_scope == ['*'] or s['project'] in selected_scope}
-            events = {e['increment_id']: e for e in canonical['records']}
-            prior = {events[i]['source_id']: events[i]['content_digest'] for i in bound['canonical_increments']
-                     if events[i]['operation'] != 'delete'}
-            if current != prior:
-                raise ValueError('memory_request_already_bound')
-            return DeliveryPlan(Path(codex), history, expected, bound, grant, new_grant, False)
-    canonical_changed = False
-    canonical_ids = []
-    if canonical_sources is not None:
-        from .memory.history import observe, snapshot_digest
-        root = _root(source_root)
-        old_canonical = history.get('canonical')
-        canonical, _ = observe(old_canonical, root, canonical_sources, complete_projects=complete_projects)
-        digest = snapshot_digest(canonical, root, selected_scope)
-        old_rows = [r for r in history['records'] if r['source_root'] == root and r['scope'] == selected_scope
-                    and not r.get('source_id')]
-        if old_canonical is None and old_rows:
-            if old_rows[-1]['source_hash'] != source_hash:
-                raise HistoryConflict('legacy_archive_snapshot_requires_evidence')
-            old_rows[-1]['canonical_snapshot_hash'] = digest
-        canonical_changed = canonical != old_canonical
-        history['canonical'] = canonical
-        canonical_ids = [r['increment_id'] for r in {r['source_id']: r for r in canonical['records']}.values()
-                         if canonical['sources'][r['source_id']]['namespace'] == canonical['roots'][root]
-                         and (selected_scope == ['*'] or canonical['sources'][r['source_id']]['project'] in selected_scope)]
-        source_hash = digest
+    canonical, _ = observe(old_canonical, root, canonical_sources, complete_projects=complete_projects)
+    changed = canonical != old_canonical
+    history['canonical'] = canonical
+    source_hash = snapshot_digest(canonical, root, selected_scope)
+    canonical_ids = sorted(selected(canonical, root, selected_scope).values())
     if grant and not grant['periodic'] and grant['request_id'] in history['requests']:
         bound = next(r for r in history['records'] if r['increment_id'] == history['requests'][grant['request_id']])
-        if bound.get('canonical_snapshot_hash', bound['source_hash']) != source_hash:
+        if bound['source_hash'] != source_hash:
             raise ValueError('memory_request_already_bound')
-        return DeliveryPlan(Path(codex), history, expected, bound, grant, new_grant, canonical_changed)
-    root = _root(source_root)
-    rows = [r for r in history['records'] if r['source_root'] == root and r['scope'] == selected_scope and not r.get('source_id')]
+        changed = _prune(history) or changed
+        return DeliveryPlan(Path(codex), history, expected, bound, grant, new_grant, changed)
+    rows = [r for r in history['records'] if r['source_root'] == root and r['scope'] == selected_scope]
     prior = rows[-1] if rows else None
-    changed = prior is None or prior.get('canonical_snapshot_hash', prior['source_hash']) != source_hash
-    if changed:
+    if prior is None or prior['source_hash'] != source_hash:
         predecessor = prior['increment_id'] if prior else None
         inc = increment_id(root, selected_scope, source_hash, predecessor)
         record = dict(increment_id=inc, predecessor=predecessor, source_root=root,
                       scope=selected_scope, source_hash=source_hash, request_id=None,
-                      periodic=False, delivery_state='archive_only', prepared_note_path=f'prepared/{inc}.md')
+                      periodic=False, delivery_state='archive_only', prepared_note_path=f'prepared/{inc}.md',
+                      canonical_increments=canonical_ids)
         record['content_hash'] = sha(render_note(record, codex))
-        if canonical_sources is not None:
-            record['canonical_increments'] = canonical_ids
         history['records'].append(record)
+        changed = True
     else:
         record = prior
     if grant and grant['state'] == 'active' and projects and record['delivery_state'] == 'archive_only':
-        covered = {i for r in history['records'] if r['delivery_state'] not in {'archive_only', 'cancelled', 'superseded'}
-                   for i in r.get('canonical_increments', [])}
+        covered = {i for r in history['records'] if r['delivery_state'] not in UNCOVERED
+                   for i in r['canonical_increments']}
         state = 'aliased' if canonical_ids and set(canonical_ids).issubset(covered) else 'prepared'
         record.update(request_id=grant['request_id'], periodic=grant['periodic'], delivery_state=state)
         changed = True
     if grant and grant['state'] == 'active' and not grant['periodic']:
         changed = history['requests'].get(grant['request_id']) != record['increment_id'] or changed
         history['requests'][grant['request_id']] = record['increment_id']
-    return DeliveryPlan(Path(codex), history, expected, record, grant, new_grant, changed or canonical_changed, not archive_only)
+    changed = _prune(history) or changed
+    return DeliveryPlan(Path(codex), history, expected, record, grant, new_grant, changed, not archive_only)
+
+
+def _prune(history):
+    """Drop rows delivery no longer needs; return whether any were dropped.
+
+    Kept: the newest row of each stream (the next predecessor), the newest row of
+    each stream that represents its heads to Codex (the source of ``covered``:
+    a head still current was in that row if it was in any earlier one), rows
+    still pending or unresolved, and rows bound to one-shot requests.
+    """
+    keep = set(history['requests'].values())
+    newest, newest_covered = {}, {}
+    for row in history['records']:
+        newest[_stream(row)] = row['increment_id']
+        if row['delivery_state'] not in UNCOVERED:
+            newest_covered[_stream(row)] = row['increment_id']
+        if row['delivery_state'] in PENDING | UNRESOLVED:
+            keep.add(row['increment_id'])
+    keep |= set(newest.values()) | set(newest_covered.values())
+    before = len(history['records'])
+    history['records'] = [r for r in history['records'] if r['increment_id'] in keep]
+    return len(history['records']) != before
 
 
 def checkpoint(boundary):
@@ -535,6 +497,13 @@ def prepare(intent, *, skills=None):
                 checkpoint('prepared_note')
         if intent.changed:
             _save(intent)
+        # Expected bytes matter only while a row can still be published; the
+        # saved history no longer needs the rest (render_note reproduces them).
+        pending = {r['prepared_note_path'] for r in intent.history['records'] if r['delivery_state'] in PENDING}
+        prepared_root = state_root(intent.codex) / 'prepared'
+        for path in (sorted(prepared_root.iterdir()) if prepared_root.exists() else ()):
+            if f'prepared/{path.name}' not in pending:
+                validate_path(path, root=prepared_root).unlink()
         grants = _authorizations(intent.codex)
         if not grants.get('history_initialized', False):
             grants['history_initialized'] = True
@@ -549,16 +518,12 @@ def deliver(intent, *, skills=None):
         intent.history = history
         if not intent.allow_delivery:
             return metadata(intent)
-        by_id = {r['increment_id']: r for r in history['records']}
-        selected = by_id[intent.record['increment_id']]
-        ancestors = set()
-        predecessor = selected['predecessor']
-        while predecessor is not None:
-            ancestors.add(predecessor)
-            predecessor = by_id[predecessor]['predecessor']
-        for row in history['records']:
+        records = history['records']
+        position = next(i for i, r in enumerate(records) if r['increment_id'] == intent.record['increment_id'])
+        selected = records[position]
+        for index, row in enumerate(records):
             state = row['delivery_state']
-            if state not in {'prepared', 'publication_started'}:
+            if state not in PENDING:
                 continue
             note = native_note_path(row, intent.codex)
             payload = read_bounded(state_root(intent.codex) / row['prepared_note_path'], NOTE_LIMIT)
@@ -568,13 +533,12 @@ def deliver(intent, *, skills=None):
                     _save(intent)
                     continue
                 if row['increment_id'] != intent.record['increment_id']:
-                    if (row['source_root'] == selected['source_root'] and
-                            row['scope'] == selected['scope'] and row.get('source_id') == selected.get('source_id')
-                            and row['increment_id'] in ancestors):
+                    # Rows of one stream are appended in chain order, so an earlier row is an ancestor.
+                    if _stream(row) == _stream(selected) and index < position:
                         row['delivery_state'] = 'superseded'
                         _save(intent)
                     continue
-                if not contract_available(intent.codex, row.get('memories_root')):
+                if not contract_available(intent.codex):
                     continue
                 row['delivery_state'] = 'publication_started'
                 _save(intent)
@@ -584,7 +548,7 @@ def deliver(intent, *, skills=None):
                     row['delivery_state'] = 'cancelled'
                     _save(intent)
                     continue
-                if not contract_available(intent.codex, row.get('memories_root')):
+                if not contract_available(intent.codex):
                     row['delivery_state'] = 'prepared'
                     _save(intent)
                     continue
@@ -626,13 +590,12 @@ def metadata(intent):
     result = {k: row[k] for k in ('increment_id', 'predecessor', 'delivery_state', 'content_hash', 'scope', 'source_root', 'source_hash',
                                   'request_id', 'periodic', 'prepared_note_path')}
     result['unresolved'] = [{'increment_id': r['increment_id'], 'delivery_state': r['delivery_state']}
-                            for r in intent.history['records'] if r['delivery_state'] in
-                            {'publication_started', 'delivery_unknown', 'conflict', 'cancelled'}]
+                            for r in intent.history['records'] if r['delivery_state'] in UNRESOLVED]
     return result
 
 
 def preserve_conflict(codex, evidence, *, skills=None):
-    """Keep the first metadata-only migration evidence before rewriting an index."""
+    """Keep the first metadata-only conflict evidence before rewriting an index."""
     with _locked(codex, skills):
         path = state_root(codex) / 'history-conflict.json'
         # Existing conflict evidence is retained, never used as delivery authority.

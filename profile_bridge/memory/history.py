@@ -1,50 +1,41 @@
-"""Per-source ledger embedded in the durable T03 outbox transaction."""
-from copy import deepcopy
-import re
+"""Per-source head ledger embedded in the durable outbox transaction.
 
-from .core import NORMALIZATION, canonical_text, content_digest, encoded, increment_id, sha, source_id
+Only the latest event of each memory file is kept: its increment ID, the
+predecessor it chains to, the operation and the content digest. The file text
+itself lives in the searchable archive, never in this ledger.
+"""
+from copy import deepcopy
+
+from .core import NORMALIZATION, content_digest, encoded, increment_id, sha, source_id
+
+VERSION = 2
+OPERATIONS = {'add', 'update', 'delete', 'reappear'}
 
 
 def empty():
-    return {'version': 1, 'normalization': NORMALIZATION, 'roots': {},
-            'sources': {}, 'records': [], 'aliases': []}
+    return {'version': VERSION, 'normalization': NORMALIZATION, 'roots': {}, 'sources': {}}
 
 
 def validate(value):
-    if value['version'] != 1 or value['normalization'] != NORMALIZATION:
+    if set(value) != {'version', 'normalization', 'roots', 'sources'}:
         raise ValueError('unsupported_canonical_history')
-    if not isinstance(value['roots'], dict) or not isinstance(value['aliases'], list):
+    if value['version'] != VERSION or value['normalization'] != NORMALIZATION:
+        raise ValueError('unsupported_canonical_history')
+    if not isinstance(value['roots'], dict) or not isinstance(value['sources'], dict):
         raise ValueError('invalid_canonical_registry')
-    for key, source in value['sources'].items():
-        if source_id(source['namespace'], source['project'], source['path']) != key:
+    namespaces = set(value['roots'].values())
+    for key, head in value['sources'].items():
+        if source_id(head['namespace'], head['project'], head['path']) != key:
             raise ValueError('invalid_canonical_source')
-        if source['namespace'] not in value['roots'].values():
+        if head['namespace'] not in namespaces:
             raise ValueError('unbound_canonical_namespace')
-    heads, ids, previous_rows = {}, set(), {}
-    for row in value['records']:
-        sid = row['source_id']
-        if sid not in value['sources'] or row['predecessor'] != heads.get(sid):
+        operation = head['operation']
+        if operation not in OPERATIONS or (head['predecessor'] is None) != (operation == 'add'):
             raise ValueError('invalid_canonical_predecessor')
-        digest = content_digest(row['current']) if row['operation'] != 'delete' else sha(b'')
-        if row['content_digest'] != digest or (row['operation'] == 'delete' and row['current'] is not None):
+        if operation == 'delete' and head['content_digest'] != sha(b''):
             raise ValueError('invalid_canonical_content')
-        expected = increment_id(sid, heads.get(sid), row['operation'], digest)
-        if row['increment_id'] != expected or expected in ids:
+        if head['increment_id'] != increment_id(key, head['predecessor'], operation, head['content_digest']):
             raise ValueError('invalid_canonical_increment')
-        prior = previous_rows.get(sid)
-        operation = ('add' if prior is None else 'reappear' if prior['operation'] == 'delete' else 'update')
-        if row['operation'] != 'delete' and row['operation'] != operation:
-            raise ValueError('invalid_canonical_operation')
-        if row['operation'] == 'delete' and (prior is None or prior['operation'] == 'delete'):
-            raise ValueError('invalid_canonical_delete')
-        ids.add(expected)
-        heads[sid] = expected
-        previous_rows[sid] = row
-    for alias in value['aliases']:
-        if alias['canonical_increment'] not in ids or alias['kind'] not in {'ccms', 'archive'}:
-            raise ValueError('invalid_canonical_alias')
-        if alias['delivery'] != 'unproven' or any(not re.fullmatch('[0-9a-f]{64}', alias[k]) for k in ('legacy_id', 'evidence_sha256')):
-            raise ValueError('invalid_canonical_alias_evidence')
     return value
 
 
@@ -53,44 +44,44 @@ def observe(value, root, sources, *, complete_projects=()):
     value = deepcopy(value) if value is not None else empty()
     validate(value)
     namespace = value['roots'].setdefault(root, sha(encoded({'source_root': root})))
-    heads = {r['source_id']: r for r in value['records']}
+    heads = value['sources']
     observed, changes = set(), []
     for source in sources:
         sid = source_id(namespace, source['project'], source['path'])
         if sid in observed:
             raise ValueError('memory_project_or_path_collision')
         observed.add(sid)
-        registered = {'namespace': namespace, 'project': source['project'], 'path': source['path']}
-        if sid in value['sources'] and value['sources'][sid] != registered:
-            raise ValueError('memory_path_spelling_requires_alias')
-        value['sources'][sid] = registered
         prior = heads.get(sid)
+        if prior and (prior['project'], prior['path']) != (source['project'], source['path']):
+            raise ValueError('memory_path_spelling_requires_alias')
         digest = content_digest(source['text'])
         if prior and prior['operation'] != 'delete' and prior['content_digest'] == digest:
             continue
         operation = 'add' if prior is None else 'reappear' if prior['operation'] == 'delete' else 'update'
-        changes.append(_event(sid, prior, operation, digest, canonical_text(source['text'])))
+        changes.append(_head(sid, namespace, source['project'], source['path'], prior, operation, digest))
     for sid, prior in heads.items():
-        source = value['sources'][sid]
-        if (source['namespace'] == namespace and source['project'] in complete_projects
+        if (prior['namespace'] == namespace and prior['project'] in complete_projects
                 and sid not in observed and prior['operation'] != 'delete'):
-            changes.append(_event(sid, prior, 'delete', sha(b''), None))
-    value['records'].extend(changes)
+            changes.append(_head(sid, namespace, prior['project'], prior['path'], prior, 'delete', sha(b'')))
+    for sid, head in changes:
+        heads[sid] = head
     validate(value)
-    return value, changes
+    return value, [head for _, head in changes]
 
 
-def _event(sid, prior, operation, digest, text):
+def _head(sid, namespace, project, path, prior, operation, digest):
     predecessor = prior['increment_id'] if prior else None
-    return dict(source_id=sid, predecessor=predecessor, operation=operation,
-                content_digest=digest, current=text,
-                increment_id=increment_id(sid, predecessor, operation, digest))
+    return sid, dict(namespace=namespace, project=project, path=path, predecessor=predecessor,
+                     operation=operation, content_digest=digest,
+                     increment_id=increment_id(sid, predecessor, operation, digest))
+
+
+def selected(value, root, scope):
+    """Head increment IDs of one root and scope, keyed by source ID."""
+    namespace = value['roots'][root]
+    return {sid: head['increment_id'] for sid, head in value['sources'].items()
+            if head['namespace'] == namespace and (scope == ['*'] or head['project'] in scope)}
 
 
 def snapshot_digest(value, root, scope):
-    namespace = value['roots'][root]
-    heads = {r['source_id']: r for r in value['records']}
-    selected = {sid: r['increment_id'] for sid, r in heads.items()
-                if value['sources'][sid]['namespace'] == namespace
-                and (scope == ['*'] or value['sources'][sid]['project'] in scope)}
-    return sha(encoded(selected))
+    return sha(encoded(selected(value, root, scope)))
