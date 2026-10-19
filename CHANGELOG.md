@@ -11,6 +11,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Fixed
 
+- A runtime-policy alternative under `llmcall-tasks/alternatives/` is now retired as soon as the policy stops selecting it (reason `runtime_policy_withdrawn`). Before, its files stayed owned and were reported `plugin_install_unavailable` every run once their source had moved away, which is what Codex did to the legacy slides and spreadsheets skills, so the task exited `2` with nothing anyone could act on.
 - A table that another writer put inside a managed `config.toml` block no longer
   turns the whole configuration into a conflict. The Codex desktop app appends new
   tables after the last table it knows, which can land between a managed block's body

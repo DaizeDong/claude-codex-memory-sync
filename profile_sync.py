@@ -364,6 +364,7 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
         rows.append(row)
         return generated
 
+    selected_alternatives = set()
     if runtime is not None:
         alternatives = []
         selection_root = skills / 'llmcall-tasks'
@@ -373,6 +374,7 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
             entry = item['entrypoint']
             identity = json.dumps(runtime_overlays.key(entry)).encode()
             name = slug('llmcall-' + entry['name'] + '-' + digest(identity)[:12])
+            selected_alternatives.add(name)
             # Only the policy router is discoverable. Alternatives keep their
             # exact source ownership in separate non-trigger payloads.
             target = selection_root / 'alternatives' / name / 'ENTRYPOINT.md'
@@ -571,6 +573,12 @@ def plan_skills(claude: Path, skills: Path, plugins: list[tuple[str, Path]], cod
                 row.update(status="conflict", reason="managed_artifact_recreated_after_retirement")
         else:
             status, reason = source_disposition(record, catalog)
+            # A policy alternative exists only because the runtime policy selects it.
+            # Once the policy drops it, its source state no longer matters.
+            alternatives_root = skills / 'llmcall-tasks' / 'alternatives'
+            if (runtime is not None and target.is_relative_to(alternatives_root)
+                    and target.relative_to(alternatives_root).parts[0] not in selected_alternatives):
+                status, reason = "retired", "runtime_policy_withdrawn"
             # Legacy link records name the directory rather than SKILL.md.
             if status == "present" and record["original"]["kind"] == "link" and not (Path(record["source"]) / "SKILL.md").is_file() and Path(record["source"]).is_dir():
                 status, reason = "retired", "source_removed"
