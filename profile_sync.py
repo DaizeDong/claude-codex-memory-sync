@@ -1437,7 +1437,7 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="Print catalog and compatibility metadata without workflow bodies")
     parser.add_argument("--repair-links", action="store_true", help="Plan recovery of broken links with exact previously owned approved sources")
     parser.add_argument("--approved-repo", action="append", type=Path, default=[], help="Additional authoritative local skill checkout (repeatable)")
-    parser.add_argument("--external-skill-manifest", type=Path, help="External external-skill-repos.json source manifest")
+    parser.add_argument("--external-skill-manifest", type=Path, help="Repository manifest (restore/repos.json shape) naming declared skill sources")
     parser.add_argument('--request-id', help='Explicit memory ingress authorization identifier')
     parser.add_argument('--scope', action='append', help='Authorized project key, or * (repeatable)')
     parser.add_argument('--periodic', action='store_true', help='Persist explicit periodic memory authorization')
