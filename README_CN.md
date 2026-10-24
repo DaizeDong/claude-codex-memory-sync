@@ -117,6 +117,10 @@ hook 告警的 identity 也包含事件名。保留的归档副本通常只按�
 
 执行工作流需要提供 0.3.0 调用接口的 `llmcall` 客户端；更早的客户端会在写入工作流状态之前报错。llmcall 的子进程运行在调用方进程的工作目录和环境里，所以工作流只能在锚定的工作目录中继续。从其他目录发起继续请求会报 `workspace_requires_process_cwd`，需要先切换到锚定目录；llmcall 0.2.0 则由每次调用传入该目录。幂等读取已经完成的请求仍可在任意目录进行。为 llmcall 0.2.0 写下的历史记录仍可读取和继续。
 
+## Runtime generation
+
+`tools/` 负责构建、安装和启动同步所用的隔离 runtime generation（`~/.codex/claude-sync/runtime-artifacts`）。构建清单和版本钉属于使用者自己的配置，放在私有仓库里。详见 [runtime generation 说明](docs/runtime-generation.md)。
+
 ## 局限
 
 - `extensions\ad_hoc\instructions.md` 是从本机 Codex 安装中检测到的约定，不是公开保证稳定的 API。如果该文件缺失，或未来 Codex 变更使约定失效，投递会停下（记忆报告显示 `unsupported`），桥接可能需要更新。

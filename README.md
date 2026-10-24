@@ -125,6 +125,10 @@ call instead), so change into the anchored workspace first. An idempotent
 retrieval of a completed request still answers from any directory. Histories
 written for llmcall 0.2.0 stay readable and resumable.
 
+## Runtime generation
+
+`tools/` builds, installs and launches the isolated runtime generation the sync runs from (`~/.codex/claude-sync/runtime-artifacts`). The build spec and version pins are operator configuration kept in a private repository. See [runtime generation](docs/runtime-generation.md).
+
 ## Limitations
 
 - `extensions\ad_hoc\instructions.md` is a contract detected in the local Codex installation, not a publicly guaranteed stable API. If it is absent or a future Codex change invalidates it, delivery stops (the memory report says `unsupported`) and the bridge may need an update.

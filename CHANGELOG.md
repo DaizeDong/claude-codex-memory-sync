@@ -6,6 +6,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ### Changed
 
+- The runtime generation tools (builder, offline installer, launcher, restore and the MCP remote bridge) now live in `tools/`; the build spec and pins stay in the operator's private config repository and are passed with `--config-repo` and `--spec`. The bridge no longer refuses to run under dependency versions outside a fixed table.
 - A failure while writing the rollback copy (a destination changed after planning, or a copy write failed) now removes the partial copy before re-raising; nothing has been changed at that point, so a half-written copy under `claude-sync/backups` is never left behind.
 - Privacy hooks now run from the local fleet-guards checkout named by `git config fleet.guards`, and the dash check from `fleet.style`; the `guards/` and `style/` submodules and the CI gate and fleet-sync workflows are removed. Install `fleet_guards` with `pip install -e "$(git config --get fleet.guards)"`.
 
