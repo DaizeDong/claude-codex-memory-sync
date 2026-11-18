@@ -1,5 +1,9 @@
 # Claude → Codex 配置桥接
 
+<!-- infra:badges:start -->
+![Infra](https://img.shields.io/badge/Infra-yes-teal) ![Layer](https://img.shields.io/badge/Layer-L3%20runtime-orange) ![Kind](https://img.shields.io/badge/Kind-sync-informational) ![Residence](https://img.shields.io/badge/Residence-on--demand-lightgrey) ![Autostart](https://img.shields.io/badge/Autostart-none-lightgrey) ![Visibility](https://img.shields.io/badge/Visibility-public-brightgreen)
+<!-- infra:badges:end -->
+
 将同机 Claude Code 的技能、指令、兼容 MCP 配置、已审阅的 hook 适配器及项目记忆接入 Codex。先预览并备份受管改动，再应用；所有权校验保护后续人工修改，原生记忆投递只覆盖明确授权的范围。
 
 [![许可证：MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

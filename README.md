@@ -1,5 +1,9 @@
 # Claude → Codex Profile Bridge
 
+<!-- infra:badges:start -->
+![Infra](https://img.shields.io/badge/Infra-yes-teal) ![Layer](https://img.shields.io/badge/Layer-L3%20runtime-orange) ![Kind](https://img.shields.io/badge/Kind-sync-informational) ![Residence](https://img.shields.io/badge/Residence-on--demand-lightgrey) ![Autostart](https://img.shields.io/badge/Autostart-none-lightgrey) ![Visibility](https://img.shields.io/badge/Visibility-public-brightgreen)
+<!-- infra:badges:end -->
+
 Bridge supported Claude Code skills, instructions, MCP settings, reviewed hook adapters, and project memory into Codex on the same machine. Preview and back up managed changes before applying them. Ownership checks protect later user edits; native memory delivery requires an explicit authorized scope.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

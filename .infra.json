@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "layer": 3,
+  "kind": "sync",
+  "residence": "on-demand",
+  "autostart": "none",
+  "selfheal": null,
+  "visibility": "PUBLIC"
+}
